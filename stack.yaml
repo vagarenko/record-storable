@@ -1,6 +1,14 @@
 resolver: nightly-2017-10-28
 packages:
   - .
+  - location:
+      git: https://github.com/goldfirere/singletons.git
+      commit: d4c522708e9ac0bf0399537ea718291d3dc90583
+    extra-dep: true
+  - location:
+      git: https://github.com/goldfirere/th-desugar.git
+      commit: d3f5c493d037c74c1326c867edac4ee4dd45efe3
+    extra-dep: true
 flags: {}
 extra-package-dbs: []
 extra-deps:

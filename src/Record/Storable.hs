@@ -7,7 +7,6 @@
     , ScopedTypeVariables
     , KindSignatures
     , TypeFamilies
-    , NoMonoLocalBinds
     , TypeInType
     , RankNTypes
     , AllowAmbiguousTypes
@@ -18,6 +17,7 @@
     , MultiParamTypeClasses
     , UndecidableInstances
     , OverloadedLabels
+    , TemplateHaskell
 #-}
 
 module Record.Storable where
@@ -25,8 +25,13 @@ module Record.Storable where
 import Control.Monad
 import Data.Coerce
 import Data.Kind
+import Data.Proxy
+import Data.Singletons.Prelude               hiding (type (+), type (-))
+import Data.Singletons.TypeLits              (Mod)
+import Data.Type.Bool
 import Debug.Trace
 import Foreign.Storable
+import Foreign.Storable.Promoted
 import Foreign.ForeignPtr
 import Foreign.Ptr
 import GHC.OverloadedLabels
@@ -51,7 +56,7 @@ import qualified Data.Vector.Unboxed.Mutable as VUM
 -- import System.IO.Unsafe (unsafePerformIO)
 -- import qualified Data.Vector.Unboxed as VU
 
-
+-- | Record field.
 data label := value =
     KnownSymbol label => FldProxy label := !value
 infix 6 :=
@@ -80,6 +85,8 @@ instance (Storable v, KnownSymbol l) => Storable (l := v) where
     peek p          = (FldProxy @l :=) <$> peek (castPtr p)
     poke p (_ := v) = poke (castPtr p) v
 
+type instance SizeOf (l := v) = SizeOf v
+type instance Alignment (l := v) = Alignment v
 
 -- | A 'Proxy' restricted to 'Symbol' kind.
 data FldProxy (t :: Symbol) = FldProxy
@@ -89,73 +96,113 @@ instance (l ~ l') => IsLabel (l :: Symbol) (FldProxy l') where
     fromLabel = FldProxy
 
 -- |
-data Rec (ts :: [Type]) = Rec
-    { _recSize       :: !Int
-    , _recLayout     :: !(VU.Vector ElemLayout)
-    , _recPtr        :: !(ForeignPtr ())
-    } deriving (Show, Eq)
+data Rec (ts :: [Type]) = Rec { _recPtr :: !(ForeignPtr ()) }
+    deriving (Show, Eq)
 
-data ElemLayout = ElemLayout 
-    { _elemLayoutOffset  :: !Int
-    , _elemLayoutSize    :: !Int
-    } deriving (Eq, Ord, Show)
+type instance SizeOf (Rec ts) = RecSize ts
 
+type instance Alignment (Rec '[]      ) = 1
+type instance Alignment (Rec (t ': ts)) = Alignment t `Max` Alignment (Rec ts)
 
--- | Compute layout of elements of a 'Rec'.
-layout :: forall (ts :: [Type]). (Layout ts) => VU.Vector ElemLayout
-layout = VU.fromList $ layoutWrk @ts 0
+-- | Size of the record in bytes.
+type family RecSize (ts :: [Type]) :: Nat where
+    RecSize ts = Fst (Snd (Last (Layout ts))) + Snd (Snd (Last (Layout ts)))
 
--- | Worker for 'layout'.
-class Layout (ts :: [Type]) where
-    layoutWrk :: Int -> [ElemLayout]
+-- | List of offsets and sizes of each label.
+type family Layout (ts :: [Type]) :: [(Symbol, (Nat, Nat))] where
+    Layout ts = LayoutWrk ts 0
 
-instance Layout '[] where
-    layoutWrk _ = []
+type family LayoutWrk (ts :: [Type]) (sizeAcc :: Nat) :: [(Symbol, (Nat, Nat))] where
+    LayoutWrk '[]              _       = '[]
+    LayoutWrk ((l := v) ': ts) sizeAcc = '(l, '(LayoutWrkOffset v sizeAcc, SizeOf v)) ': LayoutWrk ts (LayoutWrkOffset v sizeAcc + SizeOf v)
 
-instance (Layout ts, Storable t) => Layout (t ': ts) where
-    layoutWrk sizeAcc = ElemLayout offset size : layoutWrk @ts sizeAcc'
-        where
-            offset   = sizeAcc + padding
-            size     = sizeOf @t undefined
-            align    = alignment @t undefined
-            padding  = (align - sizeAcc) `mod` align
-            sizeAcc' = offset + size
+type family LayoutWrkOffset (t :: Type) (sizeAcc :: Nat) :: Nat where
+    LayoutWrkOffset t sizeAcc = sizeAcc + LayoutWrkPadding t sizeAcc
+
+type family LayoutWrkPadding (t :: Type) (sizeAcc :: Nat) :: Nat where
+    LayoutWrkPadding t sizeAcc = Mod (Diff (Alignment t) sizeAcc) (Alignment t)
+--  layoutWrk sizeAcc = (offset, size) : layoutWrk ts sizeAcc'
+--      where
+--          offset   = sizeAcc + padding
+--          padding  = (alignment t - sizeAcc) `mod` alignment t
+--          sizeAcc' = offset + sizeOf t
+
+-- | Absolute value of a difference between two nats.
+type family Diff (a :: Nat) (b :: Nat) :: Nat where
+    Diff a b = DiffWrk a b (a <=? b)
+
+type family DiffWrk (a :: Nat) (b :: Nat) (a_lte_b :: Bool) :: Nat where
+    DiffWrk a b 'True  = b - a
+    DiffWrk a b 'False = a - b
 
 -- | Allocate memory for the record. The record will contain garbage.
-mallocRec :: forall (ts :: [Type]). (Layout ts) => IO (Rec ts)
-mallocRec = Rec size lt <$> mallocForeignPtrBytes size
-    where
-        lt   = layout @ts
-        size = layoutSize lt
+mallocRec :: forall (ts :: [Type]). (KnownNat (RecSize ts)) => IO (Rec ts)
+mallocRec = Rec <$> mallocForeignPtrBytes (natVal_ @(RecSize ts))
 
--- | Total size of given layout.
-layoutSize :: VU.Vector ElemLayout -> Int
-layoutSize v =
-    let l = VU.last v
-    in _elemLayoutOffset l + _elemLayoutSize l
+-- | Find index of given label in record.
+type family LabelIndex (label :: Symbol) (ts :: [Type]) :: Nat where
+    LabelIndex l ts = LabelIndexWrk l ts 0
 
+type family LabelIndexWrk (label :: Symbol) (ts :: [Type]) (n :: Nat) :: Nat where
+    LabelIndexWrk l '[]               n = TypeError ('Text "Label " ':<>: 'ShowType l ':<>: 'Text " not found.")
+    LabelIndexWrk l ((l  := v) ': ts) n = n
+    LabelIndexWrk l ((l' := v) ': ts) n = LabelIndexWrk l ts (n + 1)
 
--- | Write an element to the memory at given offset from given pointer.
-pokeElem :: forall a. 
-    (Storable a)
-    => ForeignPtr ()
-    -> Int
-    -> a
-    -> IO ()
-pokeElem fptr offset x = do
+-- | Type of field with given label.
+type family LabelType (label :: Symbol) (ts :: [Type]) :: Type where
+    LabelType l '[]               = TypeError ('Text "Label " ':<>: 'ShowType l ':<>: 'Text " not found.")
+    LabelType l ((l  := v) ': ts) = v
+    LabelType l ((l' := v) ': ts) = LabelType l ts
+
+-- | Get offset and size of the field with given label.
+type family LabelLayout (label :: Symbol) (ts :: [Type]) :: (Nat, Nat) where
+    LabelLayout l ts = LabelLayoutWrk l (Layout ts)
+
+type family LabelLayoutWrk (label :: Symbol) (layout :: [(Symbol, (Nat, Nat))]) :: (Nat, Nat) where
+    LabelLayoutWrk l '[]                = TypeError ('Text "Label " ':<>: 'ShowType l ':<>: 'Text " not found.")
+    LabelLayoutWrk l ('( l , v ) ': xs) = v
+    LabelLayoutWrk l ('( l', v ) ': xs) = LabelLayoutWrk l xs 
+
+-- | Read a field with given label from a pointer to record with given types.
+peekLabel :: forall (l :: Symbol) (ts :: [Type]).
+          ( Storable (LabelType l ts)
+          , KnownNat (Fst (LabelLayout l ts))
+          )
+          => ForeignPtr ()
+          -> IO (LabelType l ts)
+peekLabel fp = peekOff fp (natVal_ @(Fst (LabelLayout l ts)))
+
+-- | Write a field with given label to a pointer to record with given types
+pokeLabel :: forall (l :: Symbol) (ts :: [Type]).
+          ( Storable (LabelType l ts)
+          , KnownNat (Fst (LabelLayout l ts))
+          )
+          => ForeignPtr ()
+          -> LabelType l ts
+          -> IO ()
+pokeLabel fp = pokeOff fp (natVal_ @(Fst (LabelLayout l ts)))
+
+-- | Read a value at given offset from given pointer.
+peekOff :: forall a.
+        (Storable a)
+        => ForeignPtr ()
+        -> Int
+        -> IO a
+peekOff fptr offset =
+    withForeignPtr fptr $ \ptr ->
+        peekByteOff (castPtr @_ @a ptr) offset
+
+-- | Write a value to the memory at given offset from given pointer.
+pokeOff :: forall a. 
+        (Storable a)
+        => ForeignPtr ()
+        -> Int
+        -> a
+        -> IO ()
+pokeOff fptr offset x = do
     traceM $ "poke " ++ show offset
     withForeignPtr fptr $ \ptr ->
         pokeByteOff (castPtr @_ @a ptr) offset x
-
--- | Read an element at given offset from given pointer.
-peekElem :: forall a.
-    (Storable a)
-    => ForeignPtr ()
-    -> Int
-    -> IO a
-peekElem fptr offset =
-    withForeignPtr fptr $ \ptr ->
-        peekByteOff (castPtr @_ @a ptr) offset
 
 
 
@@ -259,73 +306,5 @@ peekElem fptr offset =
 -- -- | Constraints of 'thenV' function.
 -- type ThenV (m :: Type -> Type) a b (ts :: [Type]) = BindV m a b ts
 
----------------------------------------------------------------------------------------------------
--- Unboxed Vector instances for ElmeLayout
----------------------------------------------------------------------------------------------------
-newtype instance VU.MVector s (ElemLayout) = MV_ElemLayout (VU.MVector s (Int, Int))
-newtype instance VU.Vector    (ElemLayout) = V_ElemLayout  (VU.Vector    (Int, Int))
-
-instance VGM.MVector VU.MVector ElemLayout where
-    {-# INLINE basicLength #-}
-    {-# INLINE basicUnsafeSlice #-}
-    {-# INLINE basicOverlaps #-}
-    {-# INLINE basicUnsafeNew #-}
-    {-# INLINE basicInitialize #-}
-    {-# INLINE basicUnsafeReplicate #-}
-    {-# INLINE basicUnsafeRead #-}
-    {-# INLINE basicUnsafeWrite #-}
-    {-# INLINE basicClear #-}
-    {-# INLINE basicSet #-}
-    {-# INLINE basicUnsafeCopy #-}
-    {-# INLINE basicUnsafeGrow #-}
-
-    basicLength (MV_ElemLayout v) = VGM.basicLength v
-    
-    basicUnsafeSlice i n (MV_ElemLayout v) = MV_ElemLayout $ VGM.basicUnsafeSlice i n v
-    
-    basicOverlaps (MV_ElemLayout v1) (MV_ElemLayout v2) = VGM.basicOverlaps v1 v2
-    
-    basicUnsafeNew n = MV_ElemLayout <$> VGM.basicUnsafeNew n
-
-    basicInitialize (MV_ElemLayout v) = VGM.basicInitialize v
-    
-    basicUnsafeReplicate n (ElemLayout o s) = MV_ElemLayout <$> VGM.basicUnsafeReplicate n (o, s)
-    
-    basicUnsafeRead (MV_ElemLayout v) i = uncurry ElemLayout <$> VGM.basicUnsafeRead v i
-    
-    basicUnsafeWrite (MV_ElemLayout v) i (ElemLayout o s) = VGM.basicUnsafeWrite v i (o, s)
-    
-    basicClear (MV_ElemLayout v) = VGM.basicClear v
-    
-    basicSet (MV_ElemLayout v) (ElemLayout o s) = VGM.basicSet v (o, s)
-    
-    basicUnsafeCopy (MV_ElemLayout v1) (MV_ElemLayout v2) = VGM.basicUnsafeCopy v1 v2
-    
-    basicUnsafeMove (MV_ElemLayout v1) (MV_ElemLayout v2) = VGM.basicUnsafeMove v1 v2
-    
-    basicUnsafeGrow (MV_ElemLayout v) n = MV_ElemLayout <$> VGM.basicUnsafeGrow v n
-
-instance VG.Vector VU.Vector ElemLayout where
-    {-# INLINE basicUnsafeFreeze #-}
-    {-# INLINE basicUnsafeThaw #-}
-    {-# INLINE basicLength #-}
-    {-# INLINE basicUnsafeSlice #-}
-    {-# INLINE basicUnsafeIndexM #-}
-    {-# INLINE elemseq #-}
-
-    basicUnsafeFreeze (MV_ElemLayout v) = V_ElemLayout <$> VG.basicUnsafeFreeze v
-
-    basicUnsafeThaw (V_ElemLayout v) = MV_ElemLayout <$> VG.basicUnsafeThaw v
-
-    basicLength (V_ElemLayout v) = VG.basicLength v
-
-    basicUnsafeSlice i n (V_ElemLayout v) = V_ElemLayout $ VG.basicUnsafeSlice i n v
-
-    basicUnsafeIndexM (V_ElemLayout v) i = uncurry ElemLayout <$> VG.basicUnsafeIndexM v i
-
-    basicUnsafeCopy (MV_ElemLayout mv) (V_ElemLayout v) = VG.basicUnsafeCopy mv v
-
-    elemseq _ (ElemLayout o s) z =
-        VG.elemseq (undefined :: VU.Vector a) o $ VG.elemseq (undefined :: VU.Vector a) s z
-
-instance VU.Unbox ElemLayout
+natVal_ :: forall (n :: Nat). (KnownNat n) => Int
+natVal_ = fromIntegral $ natVal $ Proxy @n
