@@ -18,44 +18,27 @@
     , UndecidableInstances
     , OverloadedLabels
     , TemplateHaskell
+    , StandaloneDeriving
 #-}
 
 module Record.Storable where
 
-import Control.Monad
-import Data.Coerce
 import Data.Kind
 import Data.Proxy
 import Data.Singletons.Prelude               hiding (type (+), type (-))
 import Data.Singletons.TypeLits              (Mod)
-import Data.Type.Bool
 import Debug.Trace
 import Foreign.Storable
 import Foreign.Storable.Promoted
 import Foreign.ForeignPtr
 import Foreign.Ptr
 import GHC.OverloadedLabels
+import GHC.Types
 import GHC.TypeLits
-import qualified Data.Vector.Generic         as VG
-import qualified Data.Vector.Generic.Mutable as VGM
-import qualified Data.Vector.Unboxed         as VU
-import qualified Data.Vector.Unboxed.Mutable as VUM
--- import Control.Lens
--- import Data.Kind
--- import Data.List
--- import Data.Singletons
--- import Data.Singletons.Prelude.List
--- import Data.Singletons.TypeRepStar
--- import Data.Typeable
--- import Data.Type.Equality
--- import Foreign.ForeignPtr
--- import Foreign.Ptr
--- import Foreign.Storable
--- import Type.List
--- import GHC.IO ( IO(..) )
--- import System.IO.Unsafe (unsafePerformIO)
--- import qualified Data.Vector.Unboxed as VU
+import Language.Haskell.TH                   hiding (Type)
+import qualified Language.Haskell.TH as TH
 
+---------------------------------------------------------------------------------------------------
 -- | Record field.
 data label := value =
     KnownSymbol label => FldProxy label := !value
@@ -88,6 +71,7 @@ instance (Storable v, KnownSymbol l) => Storable (l := v) where
 type instance SizeOf (l := v) = SizeOf v
 type instance Alignment (l := v) = Alignment v
 
+---------------------------------------------------------------------------------------------------
 -- | A 'Proxy' restricted to 'Symbol' kind.
 data FldProxy (t :: Symbol) = FldProxy
     deriving (Show, Read, Eq, Ord)
@@ -95,15 +79,76 @@ data FldProxy (t :: Symbol) = FldProxy
 instance (l ~ l') => IsLabel (l :: Symbol) (FldProxy l') where
     fromLabel = FldProxy
 
+---------------------------------------------------------------------------------------------------
 -- |
 data Rec (ts :: [Type]) = Rec { _recPtr :: !(ForeignPtr ()) }
-    deriving (Show, Eq)
+
+-- instance (ShowRec ts) => Show (Rec ts) where
+--     show = show . showRec
+
+-- class ShowRec (ts :: [Type]) where
+--     showRec :: Rec ts -> [String]
+
+-- instance ShowRec '[] where
+--     showRec _ = []
+
+-- instance ShowRec ((l := v) ': ts) where
+--     showRec r = 
 
 type instance SizeOf (Rec ts) = RecSize ts
 
 type instance Alignment (Rec '[]      ) = 1
 type instance Alignment (Rec (t ': ts)) = Alignment t `Max` Alignment (Rec ts)
 
+---------------------------------------------------------------------------------------------------
+-- | Create a record from 'HList' of fields.
+record :: forall (ts :: [Type]).
+       ( NatVal_ (RecSize ts)
+       , WriteFields ts ts
+       )
+       => HList ts
+       -> IO (Rec ts)
+record hl = do
+    r <- mallocRec @ts
+    writeFieldsWrk @ts @ts r hl
+    pure r
+
+rrr :: IO (Rec '["a" := Int, "b" := Float, "c" := Double])
+rrr = record
+    $  #a := (0 :: Int)
+    :& #b := (0.1 :: Float)
+    :& #c := (0.00000000001 :: Double)
+    :& Nil
+
+---------------------------------------------------------------------------------------------------
+-- | Heterogenous list.
+data HList (ts :: [Type]) where
+    (:&) :: t -> HList ts -> HList (t ': ts)
+    Nil  :: HList '[]
+
+infixr 5 :&
+
+-------------------------------------------------
+instance Eq (HList '[]) where
+    Nil == Nil = True
+
+instance (Eq t, Eq (HList ts)) => Eq (HList (t ': ts)) where
+    (a :& as) == (b :& bs) = a == b && as == bs
+
+-------------------------------------------------
+instance (ShowHList ts) => Show (HList ts) where
+    show = show . showHList
+
+class ShowHList (ts :: [Type]) where
+    showHList :: HList ts -> [String]
+
+instance ShowHList '[] where
+    showHList Nil = []
+
+instance (Show t, ShowHList ts) => ShowHList (t ': ts) where
+    showHList (a :& as) = show a : showHList as
+
+---------------------------------------------------------------------------------------------------
 -- | Size of the record in bytes.
 type family RecSize (ts :: [Type]) :: Nat where
     RecSize ts = Fst (Snd (Last (Layout ts))) + Snd (Snd (Last (Layout ts)))
@@ -135,10 +180,54 @@ type family DiffWrk (a :: Nat) (b :: Nat) (a_lte_b :: Bool) :: Nat where
     DiffWrk a b 'True  = b - a
     DiffWrk a b 'False = a - b
 
--- | Allocate memory for the record. The record will contain garbage.
-mallocRec :: forall (ts :: [Type]). (KnownNat (RecSize ts)) => IO (Rec ts)
+---------------------------------------------------------------------------------------------------
+-- | Allocate memory for the record. The memory is not initialized.
+mallocRec :: forall (ts :: [Type]). (NatVal_ (RecSize ts)) => IO (Rec ts)
 mallocRec = Rec <$> mallocForeignPtrBytes (natVal_ @(RecSize ts))
 
+---------------------------------------------------------------------------------------------------
+-- | Read fields from record.
+readFields :: forall (ts :: [Type]). (ReadFields ts ts) => Rec ts -> IO (HList ts)
+readFields = readFieldsWrk @ts @ts
+
+class ReadFields (hts :: [Type]) (rts :: [Type]) where
+    readFieldsWrk :: Rec rts -> IO (HList hts)
+
+instance ReadFields '[] rts where
+    readFieldsWrk _ = pure Nil
+    {-# INLINE readFieldsWrk #-}
+
+instance ( ReadFields hts rts
+         , ReadLabelCtx l rts
+         , KnownSymbol l
+         , LabelType l rts ~ v
+         ) => ReadFields ((l := v) ': hts) rts where
+    readFieldsWrk r = do
+        v <- readLabel @l r
+        (FldProxy @l := v :&) <$> readFieldsWrk @hts r
+    {-# INLINE readFieldsWrk #-}
+
+-------------------------------------------------
+-- | Write fields into record.
+writeFields :: forall (ts :: [Type]). (WriteFields ts ts) => Rec ts -> HList ts -> IO ()
+writeFields = writeFieldsWrk @ts @ts
+
+class WriteFields (hts :: [Type]) (rts :: [Type]) where
+    writeFieldsWrk :: Rec rts -> HList hts -> IO ()
+
+instance WriteFields '[] rts where
+    writeFieldsWrk _ _ = pure ()
+    {-# INLINE writeFieldsWrk #-}
+
+instance ( WriteFields hts rts
+         , WriteLabelCtx l rts
+         , LabelType l rts ~ v
+         ) => WriteFields ((l := v) ': hts) rts
+    where
+    writeFieldsWrk r ((_l := v) :& hts) = writeLabel @l r v >> writeFieldsWrk @hts r hts
+    {-# INLINE writeFieldsWrk #-}
+
+---------------------------------------------------------------------------------------------------
 -- | Find index of given label in record.
 type family LabelIndex (label :: Symbol) (ts :: [Type]) :: Nat where
     LabelIndex l ts = LabelIndexWrk l ts 0
@@ -163,25 +252,37 @@ type family LabelLayoutWrk (label :: Symbol) (layout :: [(Symbol, (Nat, Nat))]) 
     LabelLayoutWrk l ('( l , v ) ': xs) = v
     LabelLayoutWrk l ('( l', v ) ': xs) = LabelLayoutWrk l xs 
 
+---------------------------------------------------------------------------------------------------
 -- | Read a field with given label from a pointer to record with given types.
-peekLabel :: forall (l :: Symbol) (ts :: [Type]).
-          ( Storable (LabelType l ts)
-          , KnownNat (Fst (LabelLayout l ts))
-          )
-          => ForeignPtr ()
+readLabel :: forall (l :: Symbol) (ts :: [Type]).
+          (ReadLabelCtx l ts)
+          => Rec ts
           -> IO (LabelType l ts)
-peekLabel fp = peekOff fp (natVal_ @(Fst (LabelLayout l ts)))
+readLabel (Rec fp) = peekOff fp (natVal_ @(Fst (LabelLayout l ts)))
+{-# INLINE readLabel #-}
+
+-- | Constraints for 'readLabel'.
+type ReadLabelCtx (l :: Symbol) (ts :: [Type]) =
+    ( Storable (LabelType l ts)
+    , NatVal_ (Fst (LabelLayout l ts))
+    )
 
 -- | Write a field with given label to a pointer to record with given types
-pokeLabel :: forall (l :: Symbol) (ts :: [Type]).
-          ( Storable (LabelType l ts)
-          , KnownNat (Fst (LabelLayout l ts))
-          )
-          => ForeignPtr ()
+writeLabel :: forall (l :: Symbol) (ts :: [Type]).
+          (WriteLabelCtx l ts)
+          => Rec ts
           -> LabelType l ts
           -> IO ()
-pokeLabel fp = pokeOff fp (natVal_ @(Fst (LabelLayout l ts)))
+writeLabel (Rec fp) = pokeOff fp (natVal_ @(Fst (LabelLayout l ts)))
+{-# INLINE writeLabel #-}
 
+-- | Constraints for 'writeLabel'.
+type WriteLabelCtx (l :: Symbol) (ts :: [Type]) =
+    ( Storable (LabelType l ts)
+    , NatVal_ (Fst (LabelLayout l ts))
+    )
+
+---------------------------------------------------------------------------------------------------
 -- | Read a value at given offset from given pointer.
 peekOff :: forall a.
         (Storable a)
@@ -191,6 +292,7 @@ peekOff :: forall a.
 peekOff fptr offset =
     withForeignPtr fptr $ \ptr ->
         peekByteOff (castPtr @_ @a ptr) offset
+{-# INLINE peekOff #-}
 
 -- | Write a value to the memory at given offset from given pointer.
 pokeOff :: forall a. 
@@ -200,10 +302,9 @@ pokeOff :: forall a.
         -> a
         -> IO ()
 pokeOff fptr offset x = do
-    traceM $ "poke " ++ show offset
     withForeignPtr fptr $ \ptr ->
         pokeByteOff (castPtr @_ @a ptr) offset x
-
+{-# INLINE pokeOff #-}
 
 
 -- ---------------------------------------------------------------------------------------------------
@@ -256,13 +357,17 @@ pokeOff fptr offset x = do
 --         error "pokeElems: Impossible happend. Please report this bug."
 
 
--- -- | Family of variadic functions. Argument types are encoded in type-level list.
--- -- > '[a, b, c, ...] ~~> r   ~   a -> b -> c -> ... -> r
--- type family (~~>) (argTypes :: [Type]) (result :: Type) :: Type where
+-- | Family of variadic functions. Argument types are encoded in type-level list.
+-- > '[a, b, c, ...] ~~> r   ~   a -> b -> c -> ... -> r
+-- type family (~~>) (argTypes :: [Type]) (result :: TYPE rep) :: Type where
 --     '[]        ~~> r = r
 --     (t ':  ts) ~~> r = t -> (ts ~~> r)
 
 -- infixr 0 ~~>
+
+-- recc :: forall (ts :: [Type]). ts ~~> ((##) -> Rec ts)
+-- recc = undefined
+        
 
 -- -- | Composition of ordinary function and variadic function.
 -- class ComposeV b c (ts :: [Type]) where
@@ -306,5 +411,11 @@ pokeOff fptr offset x = do
 -- -- | Constraints of 'thenV' function.
 -- type ThenV (m :: Type -> Type) a b (ts :: [Type]) = BindV m a b ts
 
-natVal_ :: forall (n :: Nat). (KnownNat n) => Int
-natVal_ = fromIntegral $ natVal $ Proxy @n
+---------------------------------------------------------------------------------------------------
+-- | Workaround for https://ghc.haskell.org/trac/ghc/ticket/14170
+class NatVal_ (n :: Nat) where
+    natVal_ :: Int
+
+$( pure $ (flip map) [0..99] $ \i ->
+        InstanceD Nothing [] (ConT ''NatVal_ `AppT` LitT (NumTyLit i)) [FunD 'natVal_ [Clause [] (NormalB $ LitE $ IntegerL i) []]]
+ )
