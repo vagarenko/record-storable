@@ -21,22 +21,21 @@
     , StandaloneDeriving
 #-}
 
-module Record.Storable where
+module Record.Storable.Mutable where
 
+import Control.Monad.Primitive
 import Data.Kind
-import Data.Proxy
 import Data.Singletons.Prelude               hiding (type (+), type (-))
 import Data.Singletons.TypeLits              (Mod)
-import Debug.Trace
+import Foreign.ForeignPtr
+import Foreign.Marshal.Utils
+import Foreign.Ptr
 import Foreign.Storable
 import Foreign.Storable.Promoted
-import Foreign.ForeignPtr
-import Foreign.Ptr
 import GHC.OverloadedLabels
 import GHC.Types
 import GHC.TypeLits
 import Language.Haskell.TH                   hiding (Type)
-import qualified Language.Haskell.TH as TH
 
 ---------------------------------------------------------------------------------------------------
 -- | Record field.
@@ -83,17 +82,6 @@ instance (l ~ l') => IsLabel (l :: Symbol) (FldProxy l') where
 -- |
 data Rec (ts :: [Type]) = Rec { _recPtr :: !(ForeignPtr ()) }
 
--- instance (ShowRec ts) => Show (Rec ts) where
---     show = show . showRec
-
--- class ShowRec (ts :: [Type]) where
---     showRec :: Rec ts -> [String]
-
--- instance ShowRec '[] where
---     showRec _ = []
-
--- instance ShowRec ((l := v) ': ts) where
---     showRec r = 
 
 type instance SizeOf (Rec ts) = RecSize ts
 
@@ -102,15 +90,16 @@ type instance Alignment (Rec (t ': ts)) = Alignment t `Max` Alignment (Rec ts)
 
 ---------------------------------------------------------------------------------------------------
 -- | Create a record from 'HList' of fields.
-record :: forall (ts :: [Type]).
+record :: forall (ts :: [Type]) (m :: Type -> Type).
        ( NatVal_ (RecSize ts)
        , WriteFields ts ts
+       , PrimMonad m
        )
        => HList ts
-       -> IO (Rec ts)
+       -> m (Rec ts)
 record hl = do
     r <- mallocRec @ts
-    writeFieldsWrk @ts @ts r hl
+    writeFields @ts r hl
     pure r
 
 rrr :: IO (Rec '["a" := Int, "b" := Float, "c" := Double])
@@ -119,6 +108,20 @@ rrr = record
     :& #b := (0.1 :: Float)
     :& #c := (0.00000000001 :: Double)
     :& Nil
+
+-- | Make copy of the record.
+copy :: forall (ts :: [Type]) m.
+     ( NatVal_ (RecSize ts)
+     , PrimMonad m
+     )
+     => Rec ts
+     -> m (Rec ts)
+copy (Rec fp0) = do
+    r1@(Rec fp1) <- mallocRec @ts
+    unsafePrimToPrim $ withForeignPtr fp0 $ \p0 ->
+        withForeignPtr fp1 $ \p1 ->
+            copyBytes p1 p0 (natVal_ @(RecSize ts))
+    pure r1
 
 ---------------------------------------------------------------------------------------------------
 -- | Heterogenous list.
@@ -182,49 +185,64 @@ type family DiffWrk (a :: Nat) (b :: Nat) (a_lte_b :: Bool) :: Nat where
 
 ---------------------------------------------------------------------------------------------------
 -- | Allocate memory for the record. The memory is not initialized.
-mallocRec :: forall (ts :: [Type]). (NatVal_ (RecSize ts)) => IO (Rec ts)
-mallocRec = Rec <$> mallocForeignPtrBytes (natVal_ @(RecSize ts))
+mallocRec :: forall (ts :: [Type]) m.
+          ( NatVal_ (RecSize ts)
+          , PrimMonad m
+          ) 
+          => m (Rec ts)
+mallocRec = unsafePrimToPrim $ Rec <$> mallocForeignPtrBytes (natVal_ @(RecSize ts))
 
 ---------------------------------------------------------------------------------------------------
 -- | Read fields from record.
-readFields :: forall (ts :: [Type]). (ReadFields ts ts) => Rec ts -> IO (HList ts)
+readFields :: forall (ts :: [Type]) m.
+           ( ReadFields ts ts
+           , PrimMonad m
+           )
+           => Rec ts
+           -> m (HList ts)
 readFields = readFieldsWrk @ts @ts
 
 class ReadFields (hts :: [Type]) (rts :: [Type]) where
-    readFieldsWrk :: Rec rts -> IO (HList hts)
+    readFieldsWrk :: (PrimMonad m) => Rec rts -> m (HList hts)
 
 instance ReadFields '[] rts where
     readFieldsWrk _ = pure Nil
     {-# INLINE readFieldsWrk #-}
 
 instance ( ReadFields hts rts
-         , ReadLabelCtx l rts
+         , ReadFieldCtx l rts
          , KnownSymbol l
          , LabelType l rts ~ v
          ) => ReadFields ((l := v) ': hts) rts where
     readFieldsWrk r = do
-        v <- readLabel @l r
+        v <- readField @l r
         (FldProxy @l := v :&) <$> readFieldsWrk @hts r
     {-# INLINE readFieldsWrk #-}
 
 -------------------------------------------------
 -- | Write fields into record.
-writeFields :: forall (ts :: [Type]). (WriteFields ts ts) => Rec ts -> HList ts -> IO ()
+writeFields :: forall (ts :: [Type]) (m :: Type -> Type).
+            ( WriteFields ts ts
+            , PrimMonad m
+            )
+            => Rec ts
+            -> HList ts
+            -> m ()
 writeFields = writeFieldsWrk @ts @ts
 
 class WriteFields (hts :: [Type]) (rts :: [Type]) where
-    writeFieldsWrk :: Rec rts -> HList hts -> IO ()
+    writeFieldsWrk :: (PrimMonad m) => Rec rts -> HList hts -> m ()
 
 instance WriteFields '[] rts where
     writeFieldsWrk _ _ = pure ()
     {-# INLINE writeFieldsWrk #-}
 
 instance ( WriteFields hts rts
-         , WriteLabelCtx l rts
+         , WriteFieldCtx l rts
          , LabelType l rts ~ v
          ) => WriteFields ((l := v) ': hts) rts
     where
-    writeFieldsWrk r ((_l := v) :& hts) = writeLabel @l r v >> writeFieldsWrk @hts r hts
+    writeFieldsWrk r ((_l := v) :& hts) = writeField @l r v >> writeFieldsWrk @hts r hts
     {-# INLINE writeFieldsWrk #-}
 
 ---------------------------------------------------------------------------------------------------
@@ -254,162 +272,65 @@ type family LabelLayoutWrk (label :: Symbol) (layout :: [(Symbol, (Nat, Nat))]) 
 
 ---------------------------------------------------------------------------------------------------
 -- | Read a field with given label from a pointer to record with given types.
-readLabel :: forall (l :: Symbol) (ts :: [Type]).
-          (ReadLabelCtx l ts)
+readField :: forall (l :: Symbol) (ts :: [Type]) m.
+          ( ReadFieldCtx l ts
+          , PrimMonad m
+          )
           => Rec ts
-          -> IO (LabelType l ts)
-readLabel (Rec fp) = peekOff fp (natVal_ @(Fst (LabelLayout l ts)))
-{-# INLINE readLabel #-}
+          -> m (LabelType l ts)
+readField (Rec fp) = peekOff fp (natVal_ @(Fst (LabelLayout l ts)))
+{-# INLINE readField #-}
 
--- | Constraints for 'readLabel'.
-type ReadLabelCtx (l :: Symbol) (ts :: [Type]) =
+-- | Constraints for 'readField'.
+type ReadFieldCtx (l :: Symbol) (ts :: [Type]) =
     ( Storable (LabelType l ts)
     , NatVal_ (Fst (LabelLayout l ts))
     )
 
 -- | Write a field with given label to a pointer to record with given types
-writeLabel :: forall (l :: Symbol) (ts :: [Type]).
-          (WriteLabelCtx l ts)
+writeField :: forall (l :: Symbol) (ts :: [Type]) m.
+          ( WriteFieldCtx l ts
+          , PrimMonad m
+          )
           => Rec ts
           -> LabelType l ts
-          -> IO ()
-writeLabel (Rec fp) = pokeOff fp (natVal_ @(Fst (LabelLayout l ts)))
-{-# INLINE writeLabel #-}
+          -> m ()
+writeField (Rec fp) = pokeOff fp (natVal_ @(Fst (LabelLayout l ts)))
+{-# INLINE writeField #-}
 
--- | Constraints for 'writeLabel'.
-type WriteLabelCtx (l :: Symbol) (ts :: [Type]) =
+-- | Constraints for 'writeField'.
+type WriteFieldCtx (l :: Symbol) (ts :: [Type]) =
     ( Storable (LabelType l ts)
     , NatVal_ (Fst (LabelLayout l ts))
     )
 
 ---------------------------------------------------------------------------------------------------
 -- | Read a value at given offset from given pointer.
-peekOff :: forall a.
-        (Storable a)
+peekOff :: forall a m.
+        ( Storable a
+        , PrimMonad m
+        )
         => ForeignPtr ()
         -> Int
-        -> IO a
+        -> m a
 peekOff fptr offset =
-    withForeignPtr fptr $ \ptr ->
+    unsafePrimToPrim $ withForeignPtr fptr $ \ptr ->
         peekByteOff (castPtr @_ @a ptr) offset
 {-# INLINE peekOff #-}
 
 -- | Write a value to the memory at given offset from given pointer.
-pokeOff :: forall a. 
-        (Storable a)
+pokeOff :: forall a m.
+        ( Storable a
+        , PrimMonad m
+        )
         => ForeignPtr ()
         -> Int
         -> a
-        -> IO ()
+        -> m ()
 pokeOff fptr offset x = do
-    withForeignPtr fptr $ \ptr ->
+    unsafePrimToPrim $ withForeignPtr fptr $ \ptr ->
         pokeByteOff (castPtr @_ @a ptr) offset x
 {-# INLINE pokeOff #-}
-
-
--- ---------------------------------------------------------------------------------------------------
--- data HVector (ts :: [Type]) = HVector 
---     { hvectorSings      :: Sing ts
---     , hvectorSize       :: !Int
---     , hvectorLayout     :: ![ElemLayout]
---     , hvectorPtr        :: !(ForeignPtr ())
---     }
-
--- data ElemLayout = ElemLayout 
---     { elemLayoutOffset  :: !Int
---     , elemLayoutSize    :: !Int
---     } deriving (Eq, Ord, Show)
-
--- -- | Build a 'HVector'.
--- hvector :: forall (ts :: [Type]).
---     ( SingI ts
---     , Layout ts
---     , PokeElems ts
---     , ComposeV (IO (HVector ts)) (HVector ts) ts
---     , BindV IO (HVector ts) (HVector ts) ts
---     , Kleisli IO () (HVector ts) ts
---     ) 
---     => ts ~~> HVector ts
--- hvector =
---     composeV @(IO (HVector ts)) @(HVector ts) @ts
---         unsafePerformIO 
---         (bindV @IO @(HVector ts) @(HVector ts) @ts
---             (mallocHVector @ts)
---             (\hv@(HVector _ _ lay fptr) ->
---                 kleisli @IO @() @(HVector ts) @ts
---                     (pokeElems @ts fptr lay)
---                     (\_ -> pure hv)))
-
--- withHVector :: forall (ts :: [Type]) a. HVector ts -> (ts ~~> a) -> a
--- withHVector = undefined
-
--- -- | Write elements to the memory at given pointer.
--- class PokeElems (ts :: [Type]) where
---     pokeElems :: ForeignPtr () -> [ElemLayout] -> ts ~~> IO ()
-
--- instance PokeElems '[] where
---     pokeElems _ _ = pure ()
-
--- instance (Storable t, PokeElems ts, ThenV IO () () ts) => PokeElems (t ': ts) where
---     pokeElems fptr (ElemLayout offset _ : ls) a =
---         thenV @IO @() @() @ts (pokeElem @t fptr offset a) (pokeElems @ts fptr ls)
---     pokeElems _    []                         _ =
---         error "pokeElems: Impossible happend. Please report this bug."
-
-
--- | Family of variadic functions. Argument types are encoded in type-level list.
--- > '[a, b, c, ...] ~~> r   ~   a -> b -> c -> ... -> r
--- type family (~~>) (argTypes :: [Type]) (result :: TYPE rep) :: Type where
---     '[]        ~~> r = r
---     (t ':  ts) ~~> r = t -> (ts ~~> r)
-
--- infixr 0 ~~>
-
--- recc :: forall (ts :: [Type]). ts ~~> ((##) -> Rec ts)
--- recc = undefined
-        
-
--- -- | Composition of ordinary function and variadic function.
--- class ComposeV b c (ts :: [Type]) where
---     composeV :: (b -> c) -> (ts ~~> b) -> ts ~~> c
-
--- instance ComposeV b c '[] where
---     composeV f b = f b
-
--- instance (ComposeV b c ts) => ComposeV b c (t ': ts) where
---     composeV :: (((t ': ts) ~~> b) ~ (t -> ts ~~> b)) => (b -> c) -> ((t ': ts) ~~> b) -> (t ': ts) ~~> c
---     composeV f g x = composeV @b @c @ts f (g x)
-
--- -- | Left-to-right Kleisli composition of variadic function and ordinary function.
--- --   Similar to '>=>'.
--- class Kleisli (m :: Type -> Type) a b (ts :: [Type]) where
---     kleisli :: (ts ~~> m a) -> (a -> m b) -> ts ~~> m b
-
--- instance (Monad m) => Kleisli m a b '[] where
---     kleisli ma g = ma >>= g
-
--- instance (Kleisli m a b ts) => Kleisli m a b (t ': ts) where
---     kleisli f g x = kleisli @m @a @b @ts (f x) g
-
--- -- | Perform first action `m a` then pass its result to a function `(a -> ts ~~> mb)`
--- --   which returns variadic function and return that function.
--- class BindV (m :: Type -> Type) a b (ts :: [Type]) where
---     bindV :: m a -> (a -> ts ~~> m b) -> ts ~~> m b
-
--- instance (Monad m) => BindV m a b '[] where
---     bindV ma f = ma >>= f
-
--- instance (BindV m a b ts) => BindV m a b (t ': ts) where
---     bindV ma f x = bindV @m @a @b @ts ma ((flip f) x)
-
--- -- | Monadic composition that discards result of the first action.
--- thenV :: forall (m :: Type -> Type) a b (ts :: [Type]).
---     (ThenV m a b ts) => 
---     m a -> (ts ~~> m b) -> ts ~~> m b
--- thenV ma f = bindV @m @a @b @ts ma (\_ -> f)
-
--- -- | Constraints of 'thenV' function.
--- type ThenV (m :: Type -> Type) a b (ts :: [Type]) = BindV m a b ts
 
 ---------------------------------------------------------------------------------------------------
 -- | Workaround for https://ghc.haskell.org/trac/ghc/ticket/14170

@@ -17,7 +17,7 @@ cabal-version:       >=1.10
 
 library
   exposed-modules:   
-              Record.Storable
+              Record.Storable.Mutable
             , Foreign.Storable.Promoted
             , Foreign.Storable.Promoted.TH
   -- other-modules:       
@@ -31,5 +31,6 @@ library
             , singletons
             , template-haskell
             , vector
+            , primitive
   hs-source-dirs:      src
   default-language:    Haskell2010
