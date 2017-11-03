@@ -24,6 +24,7 @@
 module Record.Storable.Mutable where
 
 import Control.Monad.Primitive
+import Data.Coerce
 import Data.Kind
 import Data.Singletons.Prelude               hiding (type (+), type (-))
 import Data.Singletons.TypeLits              (Mod)
@@ -34,8 +35,17 @@ import Foreign.Storable
 import Foreign.Storable.Promoted
 import GHC.OverloadedLabels
 import GHC.Types
-import GHC.TypeLits
+import GHC.TypeLits                          hiding (natVal)
 import Language.Haskell.TH                   hiding (Type)
+import System.IO.Unsafe
+
+foo = unsafePerformIO $ newMRec @'["a" := Int, "b" := Float, "c" := Double, "d" := Int, "e" := Float]
+    -- writeField #a r (0 :: Int)
+    -- writeField #b r (0 :: Float)
+    -- writeField #c r (0 :: Double)
+    -- writeField #d r (0 :: Int)
+    -- writeField #e r (0 :: Float) 
+    --pure r
 
 ---------------------------------------------------------------------------------------------------
 -- | Record field.
@@ -77,51 +87,72 @@ data FldProxy (t :: Symbol) = FldProxy
 
 instance (l ~ l') => IsLabel (l :: Symbol) (FldProxy l') where
     fromLabel = FldProxy
+    {-# INLINE fromLabel #-}
 
 ---------------------------------------------------------------------------------------------------
--- |
-data Rec (ts :: [Type]) = Rec { _recPtr :: !(ForeignPtr ()) }
+-- | Mutable anonymous record.
+newtype MRec s (ts :: [Type]) = MRec { _mrecPtr :: (ForeignPtr ()) }
 
+instance (ReadFields ts, Eq (HList ts)) => Eq (MRec s ts) where
+    a == b = unsafeInlineIO $ do
+        fa <- readFields @ts (coerce a)
+        fb <- readFields @ts (coerce b)
+        pure (fb == fa)
 
-type instance SizeOf (Rec ts) = RecSize ts
+instance (ReadFields ts, Show (HList ts)) => Show (MRec s ts) where
+    show r = "MRec " ++ show (unsafeInlineIO $ readFields @ts $ coerce r)
 
-type instance Alignment (Rec '[]      ) = 1
-type instance Alignment (Rec (t ': ts)) = Alignment t `Max` Alignment (Rec ts)
+type instance SizeOf (MRec s ts) = RecSize ts
+
+type instance Alignment (MRec s '[]      ) = 1
+type instance Alignment (MRec s (t ': ts)) = Alignment t `Max` Alignment (MRec s ts)
+
+instance ( NatVal (RecSize ts)
+         , NatVal (Alignment (MRec s ts))
+         ) => Storable (MRec s ts)
+    where
+    sizeOf _ = natVal @(SizeOf (MRec s ts))
+    alignment _ = natVal @(Alignment (MRec s ts))
+
+    peek src = do
+        r@(MRec fp) <- newMRec @ts
+        withForeignPtr fp $ \p ->
+            copyBytes p (castPtr src) (natVal @(RecSize ts))
+        pure $ coerce r
+
+    poke dest (MRec fp) = do
+        withForeignPtr fp $ \p ->
+            copyBytes dest (castPtr p) (natVal @(RecSize ts))
 
 ---------------------------------------------------------------------------------------------------
 -- | Create a record from 'HList' of fields.
-record :: forall (ts :: [Type]) (m :: Type -> Type).
-       ( NatVal_ (RecSize ts)
-       , WriteFields ts ts
-       , PrimMonad m
-       )
-       => HList ts
-       -> m (Rec ts)
-record hl = do
-    r <- mallocRec @ts
+mrecord :: forall (ts :: [Type]) (m :: Type -> Type).
+        ( NatVal (RecSize ts)
+        , WriteFieldsWrk ts ts
+        , PrimMonad m
+        )
+        => HList ts
+        -> m (MRec (PrimState m) ts)
+mrecord hl = do
+    r <- newMRec @ts
     writeFields @ts r hl
     pure r
-
-rrr :: IO (Rec '["a" := Int, "b" := Float, "c" := Double])
-rrr = record
-    $  #a := (0 :: Int)
-    :& #b := (0.1 :: Float)
-    :& #c := (0.00000000001 :: Double)
-    :& Nil
+{-# INLINE mrecord #-}
 
 -- | Make copy of the record.
-copy :: forall (ts :: [Type]) m.
-     ( NatVal_ (RecSize ts)
-     , PrimMonad m
-     )
-     => Rec ts
-     -> m (Rec ts)
-copy (Rec fp0) = do
-    r1@(Rec fp1) <- mallocRec @ts
+clone :: forall (ts :: [Type]) m.
+      ( NatVal (RecSize ts)
+      , PrimMonad m
+      )
+      => MRec (PrimState m) ts
+      -> m (MRec (PrimState m) ts)
+clone (MRec fp0) = do
+    r1@(MRec fp1) <- newMRec @ts
     unsafePrimToPrim $ withForeignPtr fp0 $ \p0 ->
         withForeignPtr fp1 $ \p1 ->
-            copyBytes p1 p0 (natVal_ @(RecSize ts))
+            copyBytes p1 p0 (natVal @(RecSize ts))
     pure r1
+{-# INLINE clone #-}
 
 ---------------------------------------------------------------------------------------------------
 -- | Heterogenous list.
@@ -134,9 +165,11 @@ infixr 5 :&
 -------------------------------------------------
 instance Eq (HList '[]) where
     Nil == Nil = True
+    {-# INLINE (==) #-}
 
 instance (Eq t, Eq (HList ts)) => Eq (HList (t ': ts)) where
     (a :& as) == (b :& bs) = a == b && as == bs
+    {-# INLINE (==) #-}
 
 -------------------------------------------------
 instance (ShowHList ts) => Show (HList ts) where
@@ -147,9 +180,11 @@ class ShowHList (ts :: [Type]) where
 
 instance ShowHList '[] where
     showHList Nil = []
+    {-# INLINE showHList #-}
 
 instance (Show t, ShowHList ts) => ShowHList (t ': ts) where
     showHList (a :& as) = show a : showHList as
+    {-# INLINE showHList #-}
 
 ---------------------------------------------------------------------------------------------------
 -- | Size of the record in bytes.
@@ -169,7 +204,7 @@ type family LayoutWrkOffset (t :: Type) (sizeAcc :: Nat) :: Nat where
 
 type family LayoutWrkPadding (t :: Type) (sizeAcc :: Nat) :: Nat where
     LayoutWrkPadding t sizeAcc = Mod (Diff (Alignment t) sizeAcc) (Alignment t)
---  layoutWrk sizeAcc = (offset, size) : layoutWrk ts sizeAcc'
+--  layoutWrk sizeAcc = (offset, sizeOf t) : layoutWrk ts sizeAcc'
 --      where
 --          offset   = sizeAcc + padding
 --          padding  = (alignment t - sizeAcc) `mod` alignment t
@@ -185,64 +220,73 @@ type family DiffWrk (a :: Nat) (b :: Nat) (a_lte_b :: Bool) :: Nat where
 
 ---------------------------------------------------------------------------------------------------
 -- | Allocate memory for the record. The memory is not initialized.
-mallocRec :: forall (ts :: [Type]) m.
-          ( NatVal_ (RecSize ts)
-          , PrimMonad m
-          ) 
-          => m (Rec ts)
-mallocRec = unsafePrimToPrim $ Rec <$> mallocForeignPtrBytes (natVal_ @(RecSize ts))
+newMRec :: forall (ts :: [Type]) m.
+        ( NatVal (RecSize ts)
+        , PrimMonad m
+        ) 
+        => m (MRec (PrimState m) ts)
+newMRec = unsafePrimToPrim $ MRec <$> mallocForeignPtrBytes (natVal @(RecSize ts))
+{-# INLINE newMRec #-}
 
 ---------------------------------------------------------------------------------------------------
 -- | Read fields from record.
 readFields :: forall (ts :: [Type]) m.
-           ( ReadFields ts ts
+           ( ReadFields ts
            , PrimMonad m
            )
-           => Rec ts
+           => MRec (PrimState m) ts
            -> m (HList ts)
 readFields = readFieldsWrk @ts @ts
+{-# INLINE readFields #-}
 
-class ReadFields (hts :: [Type]) (rts :: [Type]) where
-    readFieldsWrk :: (PrimMonad m) => Rec rts -> m (HList hts)
+-- | Constraints for 'readFields'.
+type ReadFields (ts :: [Type]) = ReadFieldsWrk ts ts
 
-instance ReadFields '[] rts where
+class ReadFieldsWrk (hts :: [Type]) (rts :: [Type]) where
+    readFieldsWrk :: (PrimMonad m) => MRec (PrimState m) rts -> m (HList hts)
+
+instance ReadFieldsWrk '[] rts where
     readFieldsWrk _ = pure Nil
     {-# INLINE readFieldsWrk #-}
 
-instance ( ReadFields hts rts
+instance ( ReadFieldsWrk hts rts
          , ReadFieldCtx l rts
          , KnownSymbol l
          , LabelType l rts ~ v
-         ) => ReadFields ((l := v) ': hts) rts where
+         ) => ReadFieldsWrk ((l := v) ': hts) rts where
     readFieldsWrk r = do
-        v <- readField @l r
+        v <- readField @l FldProxy r
         (FldProxy @l := v :&) <$> readFieldsWrk @hts r
     {-# INLINE readFieldsWrk #-}
 
 -------------------------------------------------
 -- | Write fields into record.
 writeFields :: forall (ts :: [Type]) (m :: Type -> Type).
-            ( WriteFields ts ts
+            ( WriteFields ts
             , PrimMonad m
             )
-            => Rec ts
+            => MRec (PrimState m) ts
             -> HList ts
             -> m ()
 writeFields = writeFieldsWrk @ts @ts
+{-# INLINE writeFields #-}
 
-class WriteFields (hts :: [Type]) (rts :: [Type]) where
-    writeFieldsWrk :: (PrimMonad m) => Rec rts -> HList hts -> m ()
+-- | Constraints for 'writeFields'.
+type WriteFields (ts :: [Type]) = WriteFieldsWrk ts ts
 
-instance WriteFields '[] rts where
+class WriteFieldsWrk (hts :: [Type]) (rts :: [Type]) where
+    writeFieldsWrk :: (PrimMonad m) => MRec (PrimState m) rts -> HList hts -> m ()
+
+instance WriteFieldsWrk '[] rts where
     writeFieldsWrk _ _ = pure ()
     {-# INLINE writeFieldsWrk #-}
 
-instance ( WriteFields hts rts
+instance ( WriteFieldsWrk hts rts
          , WriteFieldCtx l rts
          , LabelType l rts ~ v
-         ) => WriteFields ((l := v) ': hts) rts
+         ) => WriteFieldsWrk ((l := v) ': hts) rts
     where
-    writeFieldsWrk r ((_l := v) :& hts) = writeField @l r v >> writeFieldsWrk @hts r hts
+    writeFieldsWrk r ((_l := v) :& hts) = writeField @l FldProxy r v >> writeFieldsWrk @hts r hts
     {-# INLINE writeFieldsWrk #-}
 
 ---------------------------------------------------------------------------------------------------
@@ -270,21 +314,28 @@ type family LabelLayoutWrk (label :: Symbol) (layout :: [(Symbol, (Nat, Nat))]) 
     LabelLayoutWrk l ('( l , v ) ': xs) = v
     LabelLayoutWrk l ('( l', v ) ': xs) = LabelLayoutWrk l xs 
 
+-- | Offset of the field with the label in the record.
+type LabelOffset (l :: Symbol) (ts :: [Type]) = Fst (LabelLayout l ts)
+
+-- | Size of the field with the label.
+type LabelSize (l :: Symbol) (ts :: [Type]) = Snd (LabelLayout l ts)
+
 ---------------------------------------------------------------------------------------------------
 -- | Read a field with given label from a pointer to record with given types.
 readField :: forall (l :: Symbol) (ts :: [Type]) m.
           ( ReadFieldCtx l ts
           , PrimMonad m
           )
-          => Rec ts
+          => FldProxy l
+          -> MRec (PrimState m) ts
           -> m (LabelType l ts)
-readField (Rec fp) = peekOff fp (natVal_ @(Fst (LabelLayout l ts)))
+readField _ (MRec fp) = peekOff fp (natVal @(LabelOffset l ts))
 {-# INLINE readField #-}
 
 -- | Constraints for 'readField'.
 type ReadFieldCtx (l :: Symbol) (ts :: [Type]) =
     ( Storable (LabelType l ts)
-    , NatVal_ (Fst (LabelLayout l ts))
+    , NatVal (LabelOffset l ts)
     )
 
 -- | Write a field with given label to a pointer to record with given types
@@ -292,16 +343,17 @@ writeField :: forall (l :: Symbol) (ts :: [Type]) m.
           ( WriteFieldCtx l ts
           , PrimMonad m
           )
-          => Rec ts
+          => FldProxy l
+          -> MRec (PrimState m) ts
           -> LabelType l ts
           -> m ()
-writeField (Rec fp) = pokeOff fp (natVal_ @(Fst (LabelLayout l ts)))
+writeField _ (MRec fp) = pokeOff fp (natVal @(LabelOffset l ts))
 {-# INLINE writeField #-}
 
 -- | Constraints for 'writeField'.
 type WriteFieldCtx (l :: Symbol) (ts :: [Type]) =
     ( Storable (LabelType l ts)
-    , NatVal_ (Fst (LabelLayout l ts))
+    , NatVal (LabelOffset l ts)
     )
 
 ---------------------------------------------------------------------------------------------------
@@ -334,9 +386,15 @@ pokeOff fptr offset x = do
 
 ---------------------------------------------------------------------------------------------------
 -- | Workaround for https://ghc.haskell.org/trac/ghc/ticket/14170
-class NatVal_ (n :: Nat) where
-    natVal_ :: Int
+class NatVal (n :: Nat) where
+    natVal :: Int
 
 $( pure $ (flip map) [0..99] $ \i ->
-        InstanceD Nothing [] (ConT ''NatVal_ `AppT` LitT (NumTyLit i)) [FunD 'natVal_ [Clause [] (NormalB $ LitE $ IntegerL i) []]]
+        InstanceD
+            Nothing
+            []
+            (ConT ''NatVal `AppT` LitT (NumTyLit i))
+            [ FunD 'natVal [Clause [] (NormalB $ LitE $ IntegerL i) []]
+            , PragmaD $ InlineP 'natVal Inline FunLike AllPhases
+            ]
  )
