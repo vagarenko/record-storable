@@ -1,5 +1,6 @@
 {-# LANGUAGE 
-      FlexibleInstances
+      CPP
+    , FlexibleInstances
     , FlexibleContexts
     , ScopedTypeVariables
     , TypeFamilies
@@ -54,7 +55,6 @@ type instance SizeOf CSize       = $(pSizeOf @CSize      )
 type instance SizeOf CPtrdiff    = $(pSizeOf @CPtrdiff   )
 type instance SizeOf CDouble     = $(pSizeOf @CDouble    )
 type instance SizeOf CFloat      = $(pSizeOf @CFloat     )
-type instance SizeOf CBool       = $(pSizeOf @CBool      )
 type instance SizeOf CULLong     = $(pSizeOf @CULLong    )
 type instance SizeOf CLLong      = $(pSizeOf @CLLong     )
 type instance SizeOf CULong      = $(pSizeOf @CULong     )
@@ -66,6 +66,9 @@ type instance SizeOf CShort      = $(pSizeOf @CShort     )
 type instance SizeOf CUChar      = $(pSizeOf @CUChar     )
 type instance SizeOf CSChar      = $(pSizeOf @CSChar     )
 type instance SizeOf CChar       = $(pSizeOf @CChar      )
+#if MIN_VERSION_base(4,10,0)
+type instance SizeOf CBool       = $(pSizeOf @CBool      )
+#endif
 
 -- | Type-level 'alignment'.
 type family Alignment (t :: Type) :: Nat
@@ -101,7 +104,6 @@ type instance Alignment CSize       = $(pAlignment @CSize      )
 type instance Alignment CPtrdiff    = $(pAlignment @CPtrdiff   )
 type instance Alignment CDouble     = $(pAlignment @CDouble    )
 type instance Alignment CFloat      = $(pAlignment @CFloat     )
-type instance Alignment CBool       = $(pAlignment @CBool      )
 type instance Alignment CULLong     = $(pAlignment @CULLong    )
 type instance Alignment CLLong      = $(pAlignment @CLLong     )
 type instance Alignment CULong      = $(pAlignment @CULong     )
@@ -113,3 +115,6 @@ type instance Alignment CShort      = $(pAlignment @CShort     )
 type instance Alignment CUChar      = $(pAlignment @CUChar     )
 type instance Alignment CSChar      = $(pAlignment @CSChar     )
 type instance Alignment CChar       = $(pAlignment @CChar      )
+#if MIN_VERSION_base(4,10,0)
+type instance Alignment CBool       = $(pAlignment @CBool      )
+#endif
