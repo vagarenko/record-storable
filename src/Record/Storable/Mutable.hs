@@ -27,7 +27,6 @@ import Control.Monad.Primitive
 import Data.Coerce
 import Data.Kind
 import Data.Singletons.Prelude               hiding (type (+), type (-))
-import Data.Singletons.TypeLits              (Mod)
 import Foreign.ForeignPtr
 import Foreign.Marshal.Utils
 import Foreign.Ptr
@@ -38,14 +37,6 @@ import GHC.Types
 import GHC.TypeLits                          hiding (natVal)
 import Language.Haskell.TH                   hiding (Type)
 import System.IO.Unsafe
-
-foo = unsafePerformIO $ newMRec @'["a" := Int, "b" := Float, "c" := Double, "d" := Int, "e" := Float]
-    -- writeField #a r (0 :: Int)
-    -- writeField #b r (0 :: Float)
-    -- writeField #c r (0 :: Double)
-    -- writeField #d r (0 :: Int)
-    -- writeField #e r (0 :: Float) 
-    --pure r
 
 ---------------------------------------------------------------------------------------------------
 -- | Record field.
@@ -209,6 +200,14 @@ type family LayoutWrkPadding (t :: Type) (sizeAcc :: Nat) :: Nat where
 --          offset   = sizeAcc + padding
 --          padding  = (alignment t - sizeAcc) `mod` alignment t
 --          sizeAcc' = offset + sizeOf t
+
+-- | Modulo operation.
+type family Mod (a :: Nat) (b :: Nat) :: Nat where
+    Mod a 0 = TypeError ('Text "Mod " ':<>: 'ShowType a ':<>: 'Text "0 - division by zero.")
+    Mod a a = 0
+    Mod 0 a = 0
+    Mod a 1 = 0
+    Mod a b = If (a <=? b) a (Mod (a - b) b)
 
 -- | Absolute value of a difference between two nats.
 type family Diff (a :: Nat) (b :: Nat) :: Nat where

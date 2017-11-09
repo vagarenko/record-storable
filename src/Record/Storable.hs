@@ -21,8 +21,6 @@
     , StandaloneDeriving
 #-}
 
-{-# OPTIONS_GHC -fno-solve-constant-dicts #-} -- See https://ghc.haskell.org/trac/ghc/ticket/13943#comment:2
-
 module Record.Storable where
 
 import Control.Monad.Primitive
@@ -36,14 +34,31 @@ import Foreign.Storable.Promoted
 import Record.Storable.Mutable
 
 --foo :: Rec '["a" := Int, "b" := Float, "c" := Double, "d" := Int, "e" := Float]
-foo = unsafeInlineIO $ do
-    r <- newMRec @'["a" := Int, "b" := Float, "c" := Double, "d" := Int, "e" := Float]
-    -- writeField #a r (0 :: Int)
-    -- writeField #b r (0 :: Float)
-    -- writeField #c r (0 :: Double)
-    -- writeField #d r (0 :: Int)
-    -- writeField #e r (0 :: Float) 
-    unsafeFreeze r
+-- foo = do
+--     r <- newMRec @'["a" := Int, "b" := Float, "c" := Double, "d" := Int, "e" := Float] @IO
+--     writeField #a r (0 :: Int)
+--     writeField #b r (0 :: Float)
+--     writeField #c r (0 :: Double)
+--     writeField #d r (0 :: Int)
+--     writeField #e r (0 :: Float) 
+--     --pure r
+foo = record
+    $  #a := (0 :: Int)
+    :& #b := (0 :: Float)
+    :& #c := (0 :: Double)
+    :& #d := (0 :: Int)
+    :& #e := (record
+        $  #a := (0 :: Int)
+        :& #b := (0 :: Float)
+        :& #c := (0 :: Double)
+        :& #d := (record
+            $  #a := (0 :: Int)
+            :& #b := (0 :: Float)
+            :& #c := (0 :: Double)
+            :& #d := (0 :: Int)
+            :& Nil)
+        :& Nil)
+    :& Nil
 
 ---------------------------------------------------------------------------------------------------
 -- | Immutable anonymous record.
