@@ -25,6 +25,7 @@ module Record.Storable.Mutable where
 
 import Control.Monad.Primitive
 import Data.Coerce
+import Data.List
 import Data.Kind
 import Data.Singletons.Prelude               hiding (type (+), type (-))
 import Foreign.ForeignPtr
@@ -36,7 +37,6 @@ import GHC.OverloadedLabels
 import GHC.Types
 import GHC.TypeLits                          hiding (natVal)
 import Language.Haskell.TH                   hiding (Type)
-import System.IO.Unsafe
 
 ---------------------------------------------------------------------------------------------------
 -- | Record field.
@@ -164,7 +164,7 @@ instance (Eq t, Eq (HList ts)) => Eq (HList (t ': ts)) where
 
 -------------------------------------------------
 instance (ShowHList ts) => Show (HList ts) where
-    show = show . showHList
+    show hl = "[ " ++ intercalate " , " (showHList hl) ++ " ]"
 
 class ShowHList (ts :: [Type]) where
     showHList :: HList ts -> [String]
