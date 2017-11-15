@@ -10,18 +10,37 @@
     , TypeInType
     , RankNTypes
     , AllowAmbiguousTypes
-    , UnboxedTuples
     , ConstraintKinds
     , InstanceSigs
     , TypeApplications 
     , MultiParamTypeClasses
     , UndecidableInstances
     , OverloadedLabels
-    , TemplateHaskell
-    , StandaloneDeriving
 #-}
 
-module Record.Storable where
+module Record.Storable (
+    -- * Record field
+      (:=)(..)
+    , FldProxy(..)
+    -- * Immutable record
+    , Rec
+    -- ** Record construction
+    , record
+    -- ** Accessing elements
+    , lens
+    , getFields
+    , getField
+    , GetField
+    , setField
+    , SetField
+    , modifyField
+    -- ** Conversion to/from mutable record
+    , freeze
+    , thaw
+    , unsafeFreeze
+    , unsafeThaw
+    , copy
+) where
 
 import Control.Monad.Primitive
 import Data.Kind
@@ -32,33 +51,6 @@ import Foreign.Ptr
 import Foreign.Storable
 import Foreign.Storable.Promoted
 import Record.Storable.Mutable
-
---foo :: Rec '["a" := Int, "b" := Float, "c" := Double, "d" := Int, "e" := Float]
--- foo = do
---     r <- newMRec @'["a" := Int, "b" := Float, "c" := Double, "d" := Int, "e" := Float] @IO
---     writeField #a r (0 :: Int)
---     writeField #b r (0 :: Float)
---     writeField #c r (0 :: Double)
---     writeField #d r (0 :: Int)
---     writeField #e r (0 :: Float) 
---     --pure r
-foo = record
-    $  #a := (0 :: Int)
-    :& #b := (0 :: Float)
-    :& #c := (0 :: Double)
-    :& #d := (0 :: Int)
-    :& #e := (record
-        $  #a := (0 :: Int)
-        :& #b := (0 :: Float)
-        :& #c := (0 :: Double)
-        :& #d := (record
-            $  #a := (0 :: Int)
-            :& #b := (0 :: Float)
-            :& #c := (0 :: Double)
-            :& #d := (0 :: Int)
-            :& Nil)
-        :& Nil)
-    :& Nil
 
 ---------------------------------------------------------------------------------------------------
 -- | Immutable anonymous record.
@@ -81,6 +73,11 @@ instance ( NatVal (RecSize ts)
          , NatVal (Alignment (Rec ts))
          ) => Storable (Rec ts)
     where
+    {-# INLINE sizeOf    #-}
+    {-# INLINE alignment #-}
+    {-# INLINE peek      #-}
+    {-# INLINE poke      #-}
+
     sizeOf _ = natVal @(SizeOf (Rec ts))
     alignment _ = natVal @(Alignment (Rec ts))
 
@@ -107,6 +104,20 @@ record hl =
 {-# INLINE record #-}
 
 ---------------------------------------------------------------------------------------------------
+-- | Simple lens.
+type Lens' s a = forall f. Functor f => (a -> f a) -> s -> f s
+
+-- | Lens for a field.
+lens :: forall (l :: Symbol) (ts :: [Type]).
+     ( GetField l ts
+     , SetField l ts
+     )
+     => FldProxy l 
+     -> Lens' (Rec ts) (LabelType l ts)
+lens l f r = fmap (\v -> setField l r v) (f (getField l r))
+{-# INLINE lens #-}
+
+---------------------------------------------------------------------------------------------------
 -- | Get the fields of the record in form of a 'HList'.
 getFields :: forall (ts :: [Type]).
           ( ReadFields ts )
@@ -120,9 +131,7 @@ getFields r = unsafeInlineIO $ do
 ---------------------------------------------------------------------------------------------------
 -- | Get the field @l@ of the record.
 getField :: forall (l :: Symbol) (ts :: [Type]).
-         ( Storable (LabelType l ts)
-         , NatVal (LabelOffset l ts)
-         )
+         ( GetField l ts )
          => FldProxy l
          -> Rec ts
          -> LabelType l ts
@@ -131,12 +140,15 @@ getField _ r = unsafeInlineIO $ do
     readField @l @ts FldProxy mr
 {-# INLINE getField #-}
 
+-- | Constraints for 'getField'.
+type GetField (l :: Symbol) (ts :: [Type]) =
+    ( Storable (LabelType l ts)
+    , NatVal (LabelOffset l ts)
+    )
+
 -- | Yield a copy of the record with the field @l@ set to given value.
 setField :: forall (l :: Symbol) (ts :: [Type]).
-         ( Storable (LabelType l ts)
-         , NatVal (RecSize ts)
-         , NatVal (LabelOffset l ts)
-         )
+         ( SetField l ts )
          => FldProxy l
          -> Rec ts
          -> LabelType l ts
@@ -147,12 +159,16 @@ setField _ r v = unsafeInlineIO $ do
     unsafeFreeze mr
 {-# INLINE setField #-}
 
+-- | Constraints for 'setField'.
+type SetField (l :: Symbol) (ts :: [Type]) =
+    ( Storable (LabelType l ts)
+    , NatVal (RecSize ts)
+    , NatVal (LabelOffset l ts)
+    )
+
 -- | Yield a copy of the record with the field @l@ modified by given function.
 modifyField :: forall (l :: Symbol) (ts :: [Type]).
-            ( Storable (LabelType l ts)
-            , NatVal (RecSize ts)
-            , NatVal (LabelOffset l ts)
-            )
+            ( ModifyField l ts )
             => FldProxy l
             -> Rec ts
             -> (LabelType l ts -> LabelType l ts)
@@ -163,6 +179,13 @@ modifyField _ r f = unsafeInlineIO $ do
     writeField @l @ts FldProxy mr (f v)
     unsafeFreeze mr
 {-# INLINE modifyField #-}
+
+-- | Constraints for 'setField'.
+type ModifyField (l :: Symbol) (ts :: [Type]) =
+    ( Storable (LabelType l ts)
+    , NatVal (RecSize ts)
+    , NatVal (LabelOffset l ts)
+    )
 
 ---------------------------------------------------------------------------------------------------
 -- | Yield an immutable copy of the mutable record.
