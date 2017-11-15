@@ -34,6 +34,7 @@ module Record.Storable.Mutable (
     , newMRec
     -- ** Record info
     , RecSize
+    , RecAlignment
     , Layout
     -- ** Accessing elements
     , readFields
@@ -99,8 +100,9 @@ instance (Storable v, KnownSymbol l) => Storable (l := v) where
     peek p          = (FldProxy @l :=) <$> peek (castPtr p)
     poke p (_ := v) = poke (castPtr p) v
 
-type instance SizeOf (l := v) = SizeOf v
-type instance Alignment (l := v) = Alignment v
+instance PStorable (l := v) where
+    type SizeOf    (l := v) = SizeOf v
+    type Alignment (l := v) = Alignment v
 
 ---------------------------------------------------------------------------------------------------
 -- | A 'Proxy' restricted to 'Symbol' kind.
@@ -126,10 +128,9 @@ instance (ReadFields ts, Show (HList ts)) => Show (MRec s ts) where
     show r = "MRec " ++ show (unsafeInlineIO $ readFields @ts $ coerce r)
     {-# INLINE show #-}
 
-type instance SizeOf (MRec s ts) = RecSize ts
-
-type instance Alignment (MRec s '[]      ) = 1
-type instance Alignment (MRec s (t ': ts)) = Alignment t `Max` Alignment (MRec s ts)
+instance PStorable (MRec s ts) where
+    type SizeOf    (MRec s ts) = RecSize ts
+    type Alignment (MRec s ts) = RecAlignment ts
 
 instance ( NatVal (RecSize ts)
          , NatVal (Alignment (MRec s ts))
@@ -221,6 +222,11 @@ instance (Show t, ShowHList ts) => ShowHList (t ': ts) where
 type family RecSize (ts :: [Type]) :: Nat where
     RecSize ts = Fst (Snd (Last (Layout ts))) + Snd (Snd (Last (Layout ts)))
 
+-- | Alignment of the record.
+type family RecAlignment (ts :: [Type]) :: Nat where
+    RecAlignment '[]       = 1
+    RecAlignment (t ': ts) = Alignment t `Max` RecAlignment ts
+
 -- | List of offsets and sizes of each label.
 type family Layout (ts :: [Type]) :: [(Symbol, (Nat, Nat))] where
     Layout ts = LayoutWrk ts 0
@@ -239,22 +245,6 @@ type family LayoutWrkPadding (t :: Type) (sizeAcc :: Nat) :: Nat where
 --          offset   = sizeAcc + padding
 --          padding  = (alignment t - sizeAcc) `mod` alignment t
 --          sizeAcc' = offset + sizeOf t
-
--- | Modulo operation.
-type family Mod (a :: Nat) (b :: Nat) :: Nat where
-    Mod a 0 = TypeError ('Text "Mod " ':<>: 'ShowType a ':<>: 'Text "0 - division by zero.")
-    Mod a a = 0
-    Mod 0 a = 0
-    Mod a 1 = 0
-    Mod a b = If (a <=? b) a (Mod (a - b) b)
-
--- | Absolute value of a difference between two nats.
-type family Diff (a :: Nat) (b :: Nat) :: Nat where
-    Diff a b = DiffWrk a b (a <=? b)
-
-type family DiffWrk (a :: Nat) (b :: Nat) (a_lte_b :: Bool) :: Nat where
-    DiffWrk a b 'True  = b - a
-    DiffWrk a b 'False = a - b
 
 ---------------------------------------------------------------------------------------------------
 -- | Allocate memory for the record. The memory is not initialized.

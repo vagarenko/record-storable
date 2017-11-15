@@ -8,113 +8,141 @@
     , AllowAmbiguousTypes
     , TypeApplications 
     , TemplateHaskell
+    , UndecidableInstances
+    , TypeOperators
+    , DeriveGeneric
+    , DeriveAnyClass
 #-}
 
-module Foreign.Storable.Promoted where
+module Foreign.Storable.Promoted (
+      PStorable(..)
+    , GPStorable(..)
+    , Mod
+    , Diff
+) where
 
 import Data.Kind
 import Data.Int
+import Data.Proxy
+import Data.Singletons.Prelude       (Max, Zip, If, Last, type (++), Fst)
 import Data.Word
 import Foreign.C.Types
 import Foreign.Ptr
 import Foreign.Storable.Promoted.TH
 import GHC.Fingerprint.Type
+import GHC.Generics
 import GHC.TypeLits
 
--- | Type-level 'sizeOf'.
-type family SizeOf (t :: Type) :: Nat
-type instance SizeOf Bool        = $(pSizeOf @Bool       )
-type instance SizeOf Char        = $(pSizeOf @Char       )
-type instance SizeOf Double      = $(pSizeOf @Double     )
-type instance SizeOf Float       = $(pSizeOf @Float      )
-type instance SizeOf Int         = $(pSizeOf @Int        )
-type instance SizeOf Int8        = $(pSizeOf @Int8       )
-type instance SizeOf Int16       = $(pSizeOf @Int16      )
-type instance SizeOf Int32       = $(pSizeOf @Int32      )
-type instance SizeOf Int64       = $(pSizeOf @Int64      )
-type instance SizeOf Word        = $(pSizeOf @Word       )
-type instance SizeOf Word8       = $(pSizeOf @Word8      )
-type instance SizeOf Word16      = $(pSizeOf @Word16     )
-type instance SizeOf Word32      = $(pSizeOf @Word32     )
-type instance SizeOf Word64      = $(pSizeOf @Word64     )
-type instance SizeOf ()          = $(pSizeOf @()         )
-type instance SizeOf Fingerprint = $(pSizeOf @Fingerprint)
-type instance SizeOf IntPtr      = $(pSizeOf @IntPtr     )
-type instance SizeOf WordPtr     = $(pSizeOf @WordPtr    )
-type instance SizeOf CUIntMax    = $(pSizeOf @CUIntMax   )
-type instance SizeOf CIntMax     = $(pSizeOf @CIntMax    )
-type instance SizeOf CUIntPtr    = $(pSizeOf @CUIntPtr   )
-type instance SizeOf CIntPtr     = $(pSizeOf @CIntPtr    )
-type instance SizeOf CSUSeconds  = $(pSizeOf @CSUSeconds )
-type instance SizeOf CUSeconds   = $(pSizeOf @CUSeconds  )
-type instance SizeOf CTime       = $(pSizeOf @CTime      )
-type instance SizeOf CClock      = $(pSizeOf @CClock     )
-type instance SizeOf CSigAtomic  = $(pSizeOf @CSigAtomic )
-type instance SizeOf CWchar      = $(pSizeOf @CWchar     )
-type instance SizeOf CSize       = $(pSizeOf @CSize      )
-type instance SizeOf CPtrdiff    = $(pSizeOf @CPtrdiff   )
-type instance SizeOf CDouble     = $(pSizeOf @CDouble    )
-type instance SizeOf CFloat      = $(pSizeOf @CFloat     )
-type instance SizeOf CULLong     = $(pSizeOf @CULLong    )
-type instance SizeOf CLLong      = $(pSizeOf @CLLong     )
-type instance SizeOf CULong      = $(pSizeOf @CULong     )
-type instance SizeOf CLong       = $(pSizeOf @CLong      )
-type instance SizeOf CUInt       = $(pSizeOf @CUInt      )
-type instance SizeOf CInt        = $(pSizeOf @CInt       )
-type instance SizeOf CUShort     = $(pSizeOf @CUShort    )
-type instance SizeOf CShort      = $(pSizeOf @CShort     )
-type instance SizeOf CUChar      = $(pSizeOf @CUChar     )
-type instance SizeOf CSChar      = $(pSizeOf @CSChar     )
-type instance SizeOf CChar       = $(pSizeOf @CChar      )
-#if MIN_VERSION_base(4,10,0)
-type instance SizeOf CBool       = $(pSizeOf @CBool      )
-#endif
+-- | Promoted 'Storable'.
+class PStorable (a :: Type) where
+    -- | Type-level 'sizeOf'.
+    type SizeOf a :: Nat
+    type instance SizeOf a = CalcSize (Zip (GSizes (Rep a)) (GAlignments (Rep a)))
 
--- | Type-level 'alignment'.
-type family Alignment (t :: Type) :: Nat
-type instance Alignment Bool        = $(pAlignment @Bool       )
-type instance Alignment Char        = $(pAlignment @Char       )
-type instance Alignment Double      = $(pAlignment @Double     )
-type instance Alignment Float       = $(pAlignment @Float      )
-type instance Alignment Int         = $(pAlignment @Int        )
-type instance Alignment Int8        = $(pAlignment @Int8       )
-type instance Alignment Int16       = $(pAlignment @Int16      )
-type instance Alignment Int32       = $(pAlignment @Int32      )
-type instance Alignment Int64       = $(pAlignment @Int64      )
-type instance Alignment Word        = $(pAlignment @Word       )
-type instance Alignment Word8       = $(pAlignment @Word8      )
-type instance Alignment Word16      = $(pAlignment @Word16     )
-type instance Alignment Word32      = $(pAlignment @Word32     )
-type instance Alignment Word64      = $(pAlignment @Word64     )
-type instance Alignment ()          = $(pAlignment @()         )
-type instance Alignment Fingerprint = $(pAlignment @Fingerprint)
-type instance Alignment IntPtr      = $(pAlignment @IntPtr     )
-type instance Alignment WordPtr     = $(pAlignment @WordPtr    )
-type instance Alignment CUIntMax    = $(pAlignment @CUIntMax   )
-type instance Alignment CIntMax     = $(pAlignment @CIntMax    )
-type instance Alignment CUIntPtr    = $(pAlignment @CUIntPtr   )
-type instance Alignment CIntPtr     = $(pAlignment @CIntPtr    )
-type instance Alignment CSUSeconds  = $(pAlignment @CSUSeconds )
-type instance Alignment CUSeconds   = $(pAlignment @CUSeconds  )
-type instance Alignment CTime       = $(pAlignment @CTime      )
-type instance Alignment CClock      = $(pAlignment @CClock     )
-type instance Alignment CSigAtomic  = $(pAlignment @CSigAtomic )
-type instance Alignment CWchar      = $(pAlignment @CWchar     )
-type instance Alignment CSize       = $(pAlignment @CSize      )
-type instance Alignment CPtrdiff    = $(pAlignment @CPtrdiff   )
-type instance Alignment CDouble     = $(pAlignment @CDouble    )
-type instance Alignment CFloat      = $(pAlignment @CFloat     )
-type instance Alignment CULLong     = $(pAlignment @CULLong    )
-type instance Alignment CLLong      = $(pAlignment @CLLong     )
-type instance Alignment CULong      = $(pAlignment @CULong     )
-type instance Alignment CLong       = $(pAlignment @CLong      )
-type instance Alignment CUInt       = $(pAlignment @CUInt      )
-type instance Alignment CInt        = $(pAlignment @CInt       )
-type instance Alignment CUShort     = $(pAlignment @CUShort    )
-type instance Alignment CShort      = $(pAlignment @CShort     )
-type instance Alignment CUChar      = $(pAlignment @CUChar     )
-type instance Alignment CSChar      = $(pAlignment @CSChar     )
-type instance Alignment CChar       = $(pAlignment @CChar      )
+    -- | Type-level 'alignment'.
+    type Alignment a :: Nat
+    type instance Alignment a = CalcAlignment (GAlignments (Rep a))
+
+class GPStorable (f :: Type -> Type) where
+    type GSizes      f :: [Nat]
+    type GAlignments f :: [Nat]
+
+instance (PStorable c) => GPStorable (K1 i c) where
+    type GSizes      (K1 i c) = '[SizeOf c]
+    type GAlignments (K1 i c) = '[Alignment c]
+
+instance (GPStorable f) => GPStorable (M1 i t f) where
+    type GSizes      (M1 i t f) = GSizes f
+    type GAlignments (M1 i t f) = GAlignments f
+
+instance (GPStorable f, GPStorable g) => GPStorable (f :*: g) where
+    type GSizes      (f :*: g) = GSizes f ++ GSizes g
+    type GAlignments (f :*: g) = GAlignments f ++ GAlignments g
+
+---------------------------------------------------------------------------------------------------
+-- | Calculate the size of a product type from list of sizes and alignments of type's fields.
+type family CalcSize (sizes_aligns :: [(Nat, Nat)]) :: Nat where
+    CalcSize sas = Last (CalcOffsets sas) + Fst (Last sas)
+
+-- | Calculate offsets of a product type from list of sizes and alignments of type's fields.
+type family CalcOffsets (sizes_aligns :: [(Nat, Nat)]) :: [Nat] where
+    CalcOffsets sas = CalcOffsetsWrk sas 0
+
+type family CalcOffsetsWrk (sizes_aligns :: [(Nat, Nat)]) (size_acc :: Nat) :: [Nat] where
+    CalcOffsetsWrk '[]              _   = '[]
+    CalcOffsetsWrk ('(s, a) ': sas) acc = CalcOffsetsWrkWrk (acc + Padding a acc) s sas
+
+type family CalcOffsetsWrkWrk (offset :: Nat) (size :: Nat) (sizes_aligns :: [(Nat, Nat)]) :: [Nat] where
+    CalcOffsetsWrkWrk o s sas = o ': CalcOffsetsWrk sas (o + s)
+
+type family Padding (align :: Nat) (size_acc :: Nat) :: Nat where
+    Padding a acc = Mod (Diff a acc) a
+
+-- | Calculate the alignment of a product type from list of alignments of type's fields.
+type family CalcAlignment (aligns :: [Nat]) :: Nat where
+    CalcAlignment '[]       = 1
+    CalcAlignment (x ': xs) = x `Max` CalcAlignment xs
+
+-- | Modulo operation.
+type family Mod (a :: Nat) (b :: Nat) :: Nat where
+    Mod a 0 = TypeError ('Text "Mod " ':<>: 'ShowType a ':<>: 'Text "0 - division by zero.")
+    Mod a a = 0
+    Mod 0 a = 0
+    Mod a 1 = 0
+    Mod a b = If (a <=? b) a (Mod (a - b) b)
+
+-- | Absolute value of a difference between two nats.
+type family Diff (a :: Nat) (b :: Nat) :: Nat where
+    Diff a b = DiffWrk a b (a <=? b)
+
+type family DiffWrk (a :: Nat) (b :: Nat) (a_lte_b :: Bool) :: Nat where
+    DiffWrk a b 'True  = b - a
+    DiffWrk a b 'False = a - b
+
+---------------------------------------------------------------------------------------------------
+instance PStorable Bool        where type SizeOf Bool        = $(pSizeOf @Bool       ); type Alignment Bool        = $(pAlignment @Bool       )
+instance PStorable Char        where type SizeOf Char        = $(pSizeOf @Char       ); type Alignment Char        = $(pAlignment @Char       )
+instance PStorable Double      where type SizeOf Double      = $(pSizeOf @Double     ); type Alignment Double      = $(pAlignment @Double     )
+instance PStorable Float       where type SizeOf Float       = $(pSizeOf @Float      ); type Alignment Float       = $(pAlignment @Float      )
+instance PStorable Int         where type SizeOf Int         = $(pSizeOf @Int        ); type Alignment Int         = $(pAlignment @Int        )
+instance PStorable Int8        where type SizeOf Int8        = $(pSizeOf @Int8       ); type Alignment Int8        = $(pAlignment @Int8       )
+instance PStorable Int16       where type SizeOf Int16       = $(pSizeOf @Int16      ); type Alignment Int16       = $(pAlignment @Int16      )
+instance PStorable Int32       where type SizeOf Int32       = $(pSizeOf @Int32      ); type Alignment Int32       = $(pAlignment @Int32      )
+instance PStorable Int64       where type SizeOf Int64       = $(pSizeOf @Int64      ); type Alignment Int64       = $(pAlignment @Int64      )
+instance PStorable Word        where type SizeOf Word        = $(pSizeOf @Word       ); type Alignment Word        = $(pAlignment @Word       )
+instance PStorable Word8       where type SizeOf Word8       = $(pSizeOf @Word8      ); type Alignment Word8       = $(pAlignment @Word8      )
+instance PStorable Word16      where type SizeOf Word16      = $(pSizeOf @Word16     ); type Alignment Word16      = $(pAlignment @Word16     )
+instance PStorable Word32      where type SizeOf Word32      = $(pSizeOf @Word32     ); type Alignment Word32      = $(pAlignment @Word32     )
+instance PStorable Word64      where type SizeOf Word64      = $(pSizeOf @Word64     ); type Alignment Word64      = $(pAlignment @Word64     )
+instance PStorable ()          where type SizeOf ()          = $(pSizeOf @()         ); type Alignment ()          = $(pAlignment @()         )
+instance PStorable Fingerprint where type SizeOf Fingerprint = $(pSizeOf @Fingerprint); type Alignment Fingerprint = $(pAlignment @Fingerprint)
+instance PStorable IntPtr      where type SizeOf IntPtr      = $(pSizeOf @IntPtr     ); type Alignment IntPtr      = $(pAlignment @IntPtr     )
+instance PStorable WordPtr     where type SizeOf WordPtr     = $(pSizeOf @WordPtr    ); type Alignment WordPtr     = $(pAlignment @WordPtr    )
+instance PStorable CUIntMax    where type SizeOf CUIntMax    = $(pSizeOf @CUIntMax   ); type Alignment CUIntMax    = $(pAlignment @CUIntMax   )
+instance PStorable CIntMax     where type SizeOf CIntMax     = $(pSizeOf @CIntMax    ); type Alignment CIntMax     = $(pAlignment @CIntMax    )
+instance PStorable CUIntPtr    where type SizeOf CUIntPtr    = $(pSizeOf @CUIntPtr   ); type Alignment CUIntPtr    = $(pAlignment @CUIntPtr   )
+instance PStorable CIntPtr     where type SizeOf CIntPtr     = $(pSizeOf @CIntPtr    ); type Alignment CIntPtr     = $(pAlignment @CIntPtr    )
+instance PStorable CSUSeconds  where type SizeOf CSUSeconds  = $(pSizeOf @CSUSeconds ); type Alignment CSUSeconds  = $(pAlignment @CSUSeconds )
+instance PStorable CUSeconds   where type SizeOf CUSeconds   = $(pSizeOf @CUSeconds  ); type Alignment CUSeconds   = $(pAlignment @CUSeconds  )
+instance PStorable CTime       where type SizeOf CTime       = $(pSizeOf @CTime      ); type Alignment CTime       = $(pAlignment @CTime      )
+instance PStorable CClock      where type SizeOf CClock      = $(pSizeOf @CClock     ); type Alignment CClock      = $(pAlignment @CClock     )
+instance PStorable CSigAtomic  where type SizeOf CSigAtomic  = $(pSizeOf @CSigAtomic ); type Alignment CSigAtomic  = $(pAlignment @CSigAtomic )
+instance PStorable CWchar      where type SizeOf CWchar      = $(pSizeOf @CWchar     ); type Alignment CWchar      = $(pAlignment @CWchar     )
+instance PStorable CSize       where type SizeOf CSize       = $(pSizeOf @CSize      ); type Alignment CSize       = $(pAlignment @CSize      )
+instance PStorable CPtrdiff    where type SizeOf CPtrdiff    = $(pSizeOf @CPtrdiff   ); type Alignment CPtrdiff    = $(pAlignment @CPtrdiff   )
+instance PStorable CDouble     where type SizeOf CDouble     = $(pSizeOf @CDouble    ); type Alignment CDouble     = $(pAlignment @CDouble    )
+instance PStorable CFloat      where type SizeOf CFloat      = $(pSizeOf @CFloat     ); type Alignment CFloat      = $(pAlignment @CFloat     )
+instance PStorable CULLong     where type SizeOf CULLong     = $(pSizeOf @CULLong    ); type Alignment CULLong     = $(pAlignment @CULLong    )
+instance PStorable CLLong      where type SizeOf CLLong      = $(pSizeOf @CLLong     ); type Alignment CLLong      = $(pAlignment @CLLong     )
+instance PStorable CULong      where type SizeOf CULong      = $(pSizeOf @CULong     ); type Alignment CULong      = $(pAlignment @CULong     )
+instance PStorable CLong       where type SizeOf CLong       = $(pSizeOf @CLong      ); type Alignment CLong       = $(pAlignment @CLong      )
+instance PStorable CUInt       where type SizeOf CUInt       = $(pSizeOf @CUInt      ); type Alignment CUInt       = $(pAlignment @CUInt      )
+instance PStorable CInt        where type SizeOf CInt        = $(pSizeOf @CInt       ); type Alignment CInt        = $(pAlignment @CInt       )
+instance PStorable CUShort     where type SizeOf CUShort     = $(pSizeOf @CUShort    ); type Alignment CUShort     = $(pAlignment @CUShort    )
+instance PStorable CShort      where type SizeOf CShort      = $(pSizeOf @CShort     ); type Alignment CShort      = $(pAlignment @CShort     )
+instance PStorable CUChar      where type SizeOf CUChar      = $(pSizeOf @CUChar     ); type Alignment CUChar      = $(pAlignment @CUChar     )
+instance PStorable CSChar      where type SizeOf CSChar      = $(pSizeOf @CSChar     ); type Alignment CSChar      = $(pAlignment @CSChar     )
+instance PStorable CChar       where type SizeOf CChar       = $(pSizeOf @CChar      ); type Alignment CChar       = $(pAlignment @CChar      )
 #if MIN_VERSION_base(4,10,0)
-type instance Alignment CBool       = $(pAlignment @CBool      )
+instance PStorable CBool       where type SizeOf CBool       = $(pSizeOf @CBool      ); type Alignment CBool       = $(pAlignment @CBool      )
 #endif

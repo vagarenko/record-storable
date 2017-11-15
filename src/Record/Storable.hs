@@ -40,6 +40,23 @@ module Record.Storable (
     , unsafeFreeze
     , unsafeThaw
     , copy
+    -- * Re-exports
+    -- ** Heterogenous list
+    , HList(..)
+    -- ** Record info
+    , RecSize
+    , Layout
+    -- ** Accessing elements
+    , ReadFields
+    , WriteFields
+    -- ** Label info
+    , LabelIndex
+    , LabelType
+    , LabelLayout
+    , LabelOffset
+    , LabelSize
+    -- ** NatVal
+    , NatVal
 ) where
 
 import Control.Monad.Primitive
@@ -64,10 +81,9 @@ instance (ReadFields ts, Show (HList ts)) => Show (Rec ts) where
     show r = "Rec " ++ show (getFields r)
     {-# INLINE show #-}
 
-type instance SizeOf (Rec ts) = RecSize ts
-
-type instance Alignment (Rec '[]      ) = 1
-type instance Alignment (Rec (t ': ts)) = Alignment t `Max` Alignment (Rec ts)
+instance PStorable (Rec ts) where
+    type SizeOf    (Rec ts) = RecSize ts
+    type Alignment (Rec ts) = RecAlignment ts
 
 instance ( NatVal (RecSize ts)
          , NatVal (Alignment (Rec ts))
