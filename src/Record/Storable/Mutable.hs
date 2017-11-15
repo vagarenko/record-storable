@@ -10,7 +10,6 @@
     , TypeInType
     , RankNTypes
     , AllowAmbiguousTypes
-    , UnboxedTuples
     , ConstraintKinds
     , InstanceSigs
     , TypeApplications 
@@ -18,7 +17,6 @@
     , UndecidableInstances
     , OverloadedLabels
     , TemplateHaskell
-    , StandaloneDeriving
 #-}
 
 module Record.Storable.Mutable (
@@ -206,6 +204,7 @@ instance (Eq t, Eq (HList ts)) => Eq (HList (t ': ts)) where
 instance (ShowHList ts) => Show (HList ts) where
     show hl = "[ " ++ intercalate " , " (showHList hl) ++ " ]"
 
+-- | Helper class for 'Show' 'HList' instance.
 class ShowHList (ts :: [Type]) where
     showHList :: HList ts -> [String]
 
