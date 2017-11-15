@@ -21,7 +21,40 @@
     , StandaloneDeriving
 #-}
 
-module Record.Storable.Mutable where
+module Record.Storable.Mutable (
+    -- * Record field
+      (:=)(..)
+    , FldProxy(..)
+    -- * Mutable record
+    , MRec(..)
+    -- ** Heterogenous list
+    , HList(..)
+    , ShowHList
+    -- ** Record creation
+    , mrecord
+    , clone
+    , newMRec
+    -- ** Record info
+    , RecSize
+    , Layout
+    -- ** Accessing elements
+    , readFields
+    , ReadFields
+    , writeFields
+    , WriteFields
+    , readField
+    , ReadField
+    , writeField
+    , WriteField
+    -- ** Label info
+    , LabelIndex
+    , LabelType
+    , LabelLayout
+    , LabelOffset
+    , LabelSize
+    -- * NatVal
+    , NatVal(..)
+) where
 
 import Control.Monad.Primitive
 import Data.Coerce
@@ -89,9 +122,11 @@ instance (ReadFields ts, Eq (HList ts)) => Eq (MRec s ts) where
         fa <- readFields @ts (coerce a)
         fb <- readFields @ts (coerce b)
         pure (fb == fa)
+    {-# INLINE (==) #-}
 
 instance (ReadFields ts, Show (HList ts)) => Show (MRec s ts) where
     show r = "MRec " ++ show (unsafeInlineIO $ readFields @ts $ coerce r)
+    {-# INLINE show #-}
 
 type instance SizeOf (MRec s ts) = RecSize ts
 
@@ -102,6 +137,11 @@ instance ( NatVal (RecSize ts)
          , NatVal (Alignment (MRec s ts))
          ) => Storable (MRec s ts)
     where
+    {-# INLINE alignment #-}
+    {-# INLINE sizeOf #-}
+    {-# INLINE peek #-}
+    {-# INLINE poke #-}
+
     sizeOf _ = natVal @(SizeOf (MRec s ts))
     alignment _ = natVal @(Alignment (MRec s ts))
 
@@ -249,7 +289,7 @@ instance ReadFieldsWrk '[] rts where
     {-# INLINE readFieldsWrk #-}
 
 instance ( ReadFieldsWrk hts rts
-         , ReadFieldCtx l rts
+         , ReadField l rts
          , KnownSymbol l
          , LabelType l rts ~ v
          ) => ReadFieldsWrk ((l := v) ': hts) rts where
@@ -281,7 +321,7 @@ instance WriteFieldsWrk '[] rts where
     {-# INLINE writeFieldsWrk #-}
 
 instance ( WriteFieldsWrk hts rts
-         , WriteFieldCtx l rts
+         , WriteField l rts
          , LabelType l rts ~ v
          ) => WriteFieldsWrk ((l := v) ': hts) rts
     where
@@ -322,7 +362,7 @@ type LabelSize (l :: Symbol) (ts :: [Type]) = Snd (LabelLayout l ts)
 ---------------------------------------------------------------------------------------------------
 -- | Read a field with given label from a pointer to record with given types.
 readField :: forall (l :: Symbol) (ts :: [Type]) m.
-          ( ReadFieldCtx l ts
+          ( ReadField l ts
           , PrimMonad m
           )
           => FldProxy l
@@ -332,14 +372,14 @@ readField _ (MRec fp) = peekOff fp (natVal @(LabelOffset l ts))
 {-# INLINE readField #-}
 
 -- | Constraints for 'readField'.
-type ReadFieldCtx (l :: Symbol) (ts :: [Type]) =
+type ReadField (l :: Symbol) (ts :: [Type]) =
     ( Storable (LabelType l ts)
     , NatVal (LabelOffset l ts)
     )
 
 -- | Write a field with given label to a pointer to record with given types
 writeField :: forall (l :: Symbol) (ts :: [Type]) m.
-          ( WriteFieldCtx l ts
+          ( WriteField l ts
           , PrimMonad m
           )
           => FldProxy l
@@ -350,7 +390,7 @@ writeField _ (MRec fp) = pokeOff fp (natVal @(LabelOffset l ts))
 {-# INLINE writeField #-}
 
 -- | Constraints for 'writeField'.
-type WriteFieldCtx (l :: Symbol) (ts :: [Type]) =
+type WriteField (l :: Symbol) (ts :: [Type]) =
     ( Storable (LabelType l ts)
     , NatVal (LabelOffset l ts)
     )
