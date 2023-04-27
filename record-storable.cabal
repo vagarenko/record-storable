@@ -24,12 +24,22 @@ library
               base
             , derive-storable
             , ghc-prim
-            , lens
             , pretty-show
             , singletons
             , singletons-base
             , template-haskell
-            , vector
             , primitive
   hs-source-dirs:      src
+  default-language:    GHC2021
+
+test-suite test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Spec.hs
+  build-depends:
+          base
+        , record-storable
+        , hspec
+        , hspec-core
+        , primitive
   default-language:    GHC2021
