@@ -1,30 +1,23 @@
 {-# LANGUAGE 
       CPP
-    , FlexibleInstances
-    , FlexibleContexts
-    , ScopedTypeVariables
     , TypeFamilies
-    , TypeInType
-    , AllowAmbiguousTypes
-    , TypeApplications 
+    , PolyKinds
+    , DataKinds
     , TemplateHaskell
     , UndecidableInstances
-    , TypeOperators
-    , DeriveGeneric
-    , DeriveAnyClass
 #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Redundant bracket" #-}
 
 module Foreign.Storable.Promoted (
       PStorable(..)
     , GPStorable(..)
-    , Mod
     , Diff
 ) where
 
 import Data.Kind
 import Data.Int
-import Data.Proxy
-import Data.Singletons.Prelude       (Max, Zip, If, Last, type (++), Fst)
+import Prelude.Singletons       (Max, Zip, If, Last, type (++), Fst)
 import Data.Word
 import Foreign.C.Types
 import Foreign.Ptr
@@ -82,14 +75,6 @@ type family Padding (align :: Nat) (size_acc :: Nat) :: Nat where
 type family CalcAlignment (aligns :: [Nat]) :: Nat where
     CalcAlignment '[]       = 1
     CalcAlignment (x ': xs) = x `Max` CalcAlignment xs
-
--- | Modulo operation.
-type family Mod (a :: Nat) (b :: Nat) :: Nat where
-    Mod a 0 = TypeError ('Text "Mod " ':<>: 'ShowType a ':<>: 'Text "0 - division by zero.")
-    Mod a a = 0
-    Mod 0 a = 0
-    Mod a 1 = 0
-    Mod a b = If (a <=? b) a (Mod (a - b) b)
 
 -- | Absolute value of a difference between two nats.
 type family Diff (a :: Nat) (b :: Nat) :: Nat where

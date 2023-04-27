@@ -1,22 +1,10 @@
 {-# LANGUAGE 
-      FlexibleInstances
-    , FlexibleContexts
-    , DataKinds
-    , GADTs
-    , TypeOperators
-    , ScopedTypeVariables
-    , KindSignatures
+      GADTs
     , TypeFamilies
-    , TypeInType
-    , RankNTypes
+    , PolyKinds
+    , DataKinds
     , AllowAmbiguousTypes
-    , ConstraintKinds
-    , InstanceSigs
-    , TypeApplications 
-    , MultiParamTypeClasses
     , UndecidableInstances
-    , OverloadedLabels
-    , TemplateHaskell
 #-}
 
 module Record.Storable.Mutable (
@@ -51,23 +39,21 @@ module Record.Storable.Mutable (
     , LabelLayout
     , LabelOffset
     , LabelSize
-    -- * NatVal
-    , NatVal(..)
+    , demoteInt
 ) where
 
 import Control.Monad.Primitive
 import Data.Coerce
 import Data.List
 import Data.Kind
-import Data.Singletons.Prelude               hiding (type (+), type (-))
+import Prelude.Singletons                    hiding (type (+), type (-))
 import Foreign.ForeignPtr
 import Foreign.Marshal.Utils
 import Foreign.Ptr
 import Foreign.Storable
 import Foreign.Storable.Promoted
 import GHC.OverloadedLabels
-import GHC.Types
-import GHC.TypeLits                          hiding (natVal)
+import GHC.TypeLits
 import Language.Haskell.TH                   hiding (Type)
 
 ---------------------------------------------------------------------------------------------------
@@ -115,7 +101,7 @@ instance (l ~ l') => IsLabel (l :: Symbol) (FldProxy l') where
 
 ---------------------------------------------------------------------------------------------------
 -- | Mutable anonymous record.
-newtype MRec s (ts :: [Type]) = MRec { _mrecPtr :: (ForeignPtr ()) }
+newtype MRec s (ts :: [Type]) = MRec { _mrecPtr :: ForeignPtr () }
 
 instance (ReadFields ts, Eq (HList ts)) => Eq (MRec s ts) where
     a == b = unsafeInlineIO $ do
@@ -132,8 +118,8 @@ instance PStorable (MRec s ts) where
     type SizeOf    (MRec s ts) = RecSize ts
     type Alignment (MRec s ts) = RecAlignment ts
 
-instance ( NatVal (RecSize ts)
-         , NatVal (Alignment (MRec s ts))
+instance ( KnownNat (RecSize ts)
+         , KnownNat (Alignment (MRec s ts))
          ) => Storable (MRec s ts)
     where
     {-# INLINE alignment #-}
@@ -141,23 +127,23 @@ instance ( NatVal (RecSize ts)
     {-# INLINE peek #-}
     {-# INLINE poke #-}
 
-    sizeOf _ = natVal @(SizeOf (MRec s ts))
-    alignment _ = natVal @(Alignment (MRec s ts))
+    sizeOf _ = demoteInt @(SizeOf (MRec s ts))
+    alignment _ = demoteInt @(Alignment (MRec s ts))
 
     peek src = do
         r@(MRec fp) <- newMRec @ts
         withForeignPtr fp $ \p ->
-            copyBytes p (castPtr src) (natVal @(RecSize ts))
+            copyBytes p (castPtr src) (demoteInt @(RecSize ts))
         pure $ coerce r
 
     poke dest (MRec fp) = do
         withForeignPtr fp $ \p ->
-            copyBytes dest (castPtr p) (natVal @(RecSize ts))
+            copyBytes dest (castPtr p) (demoteInt @(RecSize ts))
 
 ---------------------------------------------------------------------------------------------------
 -- | Create a record from 'HList' of fields.
 mrecord :: forall (ts :: [Type]) (m :: Type -> Type).
-        ( NatVal (RecSize ts)
+        ( KnownNat (RecSize ts)
         , WriteFieldsWrk ts ts
         , PrimMonad m
         )
@@ -171,7 +157,7 @@ mrecord hl = do
 
 -- | Make copy of the record.
 clone :: forall (ts :: [Type]) m.
-      ( NatVal (RecSize ts)
+      ( KnownNat (RecSize ts)
       , PrimMonad m
       )
       => MRec (PrimState m) ts
@@ -180,7 +166,7 @@ clone (MRec fp0) = do
     r1@(MRec fp1) <- newMRec @ts
     unsafePrimToPrim $ withForeignPtr fp0 $ \p0 ->
         withForeignPtr fp1 $ \p1 ->
-            copyBytes p1 p0 (natVal @(RecSize ts))
+            copyBytes p1 p0 (demoteInt @(RecSize ts))
     pure r1
 {-# INLINE clone #-}
 
@@ -249,11 +235,11 @@ type family LayoutWrkPadding (t :: Type) (sizeAcc :: Nat) :: Nat where
 ---------------------------------------------------------------------------------------------------
 -- | Allocate memory for the record. The memory is not initialized.
 newMRec :: forall (ts :: [Type]) m.
-        ( NatVal (RecSize ts)
+        ( KnownNat (RecSize ts)
         , PrimMonad m
         ) 
         => m (MRec (PrimState m) ts)
-newMRec = unsafePrimToPrim $ MRec <$> mallocForeignPtrBytes (natVal @(RecSize ts))
+newMRec = unsafePrimToPrim $ MRec <$> mallocForeignPtrBytes (demoteInt @(RecSize ts))
 {-# INLINE newMRec #-}
 
 ---------------------------------------------------------------------------------------------------
@@ -357,13 +343,13 @@ readField :: forall (l :: Symbol) (ts :: [Type]) m.
           => FldProxy l
           -> MRec (PrimState m) ts
           -> m (LabelType l ts)
-readField _ (MRec fp) = peekOff fp (natVal @(LabelOffset l ts))
+readField _ (MRec fp) = peekOff fp (demoteInt @(LabelOffset l ts))
 {-# INLINE readField #-}
 
 -- | Constraints for 'readField'.
 type ReadField (l :: Symbol) (ts :: [Type]) =
     ( Storable (LabelType l ts)
-    , NatVal (LabelOffset l ts)
+    , KnownNat (LabelOffset l ts)
     )
 
 -- | Write a field with given label to a pointer to record with given types
@@ -375,13 +361,13 @@ writeField :: forall (l :: Symbol) (ts :: [Type]) m.
           -> MRec (PrimState m) ts
           -> LabelType l ts
           -> m ()
-writeField _ (MRec fp) = pokeOff fp (natVal @(LabelOffset l ts))
+writeField _ (MRec fp) = pokeOff fp (demoteInt @(LabelOffset l ts))
 {-# INLINE writeField #-}
 
 -- | Constraints for 'writeField'.
 type WriteField (l :: Symbol) (ts :: [Type]) =
     ( Storable (LabelType l ts)
-    , NatVal (LabelOffset l ts)
+    , KnownNat (LabelOffset l ts)
     )
 
 ---------------------------------------------------------------------------------------------------
@@ -412,17 +398,5 @@ pokeOff fptr offset x = do
         pokeByteOff (castPtr @_ @a ptr) offset x
 {-# INLINE pokeOff #-}
 
----------------------------------------------------------------------------------------------------
--- | Workaround for https://ghc.haskell.org/trac/ghc/ticket/14170
-class NatVal (n :: Nat) where
-    natVal :: Int
-
-$( pure $ (flip map) [0..99] $ \i ->
-        InstanceD
-            Nothing
-            []
-            (ConT ''NatVal `AppT` LitT (NumTyLit i))
-            [ FunD 'natVal [Clause [] (NormalB $ LitE $ IntegerL i) []]
-            , PragmaD $ InlineP 'natVal Inline FunLike AllPhases
-            ]
- )
+demoteInt :: forall (n :: Nat). KnownNat n => Int
+demoteInt = fromInteger . natVal $ Proxy @n

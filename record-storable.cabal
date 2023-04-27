@@ -27,8 +27,9 @@ library
             , lens
             , pretty-show
             , singletons
+            , singletons-base
             , template-haskell
             , vector
             , primitive
   hs-source-dirs:      src
-  default-language:    Haskell2010
+  default-language:    GHC2021

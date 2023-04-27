@@ -1,14 +1,4 @@
-{-# LANGUAGE
-      DataKinds
-    , ScopedTypeVariables
-    , KindSignatures
-    , TypeInType
-    , RankNTypes
-    , AllowAmbiguousTypes
-    , TypeApplications
-    , MultiParamTypeClasses
-    , UndecidableInstances
-#-}
+{-# Language AllowAmbiguousTypes #-}
 
 module Foreign.Storable.Promoted.TH where
 

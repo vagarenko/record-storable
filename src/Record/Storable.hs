@@ -1,21 +1,10 @@
 {-# LANGUAGE 
-      FlexibleInstances
-    , FlexibleContexts
-    , DataKinds
-    , GADTs
-    , TypeOperators
-    , ScopedTypeVariables
-    , KindSignatures
+      GADTs
     , TypeFamilies
-    , TypeInType
-    , RankNTypes
+    , PolyKinds
+    , DataKinds
     , AllowAmbiguousTypes
-    , ConstraintKinds
-    , InstanceSigs
-    , TypeApplications 
-    , MultiParamTypeClasses
     , UndecidableInstances
-    , OverloadedLabels
 #-}
 
 module Record.Storable (
@@ -55,23 +44,22 @@ module Record.Storable (
     , LabelLayout
     , LabelOffset
     , LabelSize
-    -- ** NatVal
-    , NatVal
 ) where
 
 import Control.Monad.Primitive
 import Data.Kind
-import Data.Singletons.Prelude               hiding (type (+), type (-))
+import Prelude.Singletons
 import Foreign.ForeignPtr
 import Foreign.Marshal.Utils
 import Foreign.Ptr
 import Foreign.Storable
 import Foreign.Storable.Promoted
 import Record.Storable.Mutable
+import GHC.TypeLits
 
 ---------------------------------------------------------------------------------------------------
 -- | Immutable anonymous record.
-newtype Rec (ts :: [Type]) = Rec { _recPtr :: (ForeignPtr ()) }
+newtype Rec (ts :: [Type]) = Rec { _recPtr :: ForeignPtr () }
 
 instance (ReadFields ts, Eq (HList ts)) => Eq (Rec ts) where
     a == b = getFields a == getFields b
@@ -85,8 +73,8 @@ instance PStorable (Rec ts) where
     type SizeOf    (Rec ts) = RecSize ts
     type Alignment (Rec ts) = RecAlignment ts
 
-instance ( NatVal (RecSize ts)
-         , NatVal (Alignment (Rec ts))
+instance ( KnownNat (RecSize ts)
+         , KnownNat (Alignment (Rec ts))
          ) => Storable (Rec ts)
     where
     {-# INLINE sizeOf    #-}
@@ -94,23 +82,23 @@ instance ( NatVal (RecSize ts)
     {-# INLINE peek      #-}
     {-# INLINE poke      #-}
 
-    sizeOf _ = natVal @(SizeOf (Rec ts))
-    alignment _ = natVal @(Alignment (Rec ts))
+    sizeOf _ = demoteInt @(SizeOf (Rec ts))
+    alignment _ = demoteInt @(Alignment (Rec ts))
 
     peek p = do
         mr@(MRec mfp) <- newMRec @ts
         withForeignPtr mfp $ \mp ->
-            copyBytes mp (castPtr p) (natVal @(RecSize ts))
+            copyBytes mp (castPtr p) (demoteInt @(RecSize ts))
         unsafeFreeze mr
 
     poke dest (Rec fp) = do
         withForeignPtr fp $ \p ->
-            copyBytes dest (castPtr p) (natVal @(RecSize ts))
+            copyBytes dest (castPtr p) (demoteInt @(RecSize ts))
 
 ---------------------------------------------------------------------------------------------------
 -- | Create a record from given 'HList' of fields.
 record :: forall (ts :: [Type]).
-       ( NatVal (RecSize ts)
+       ( KnownNat (RecSize ts)
        , WriteFields ts
        )
        => HList ts
@@ -130,7 +118,7 @@ lens :: forall (l :: Symbol) (ts :: [Type]).
      )
      => FldProxy l 
      -> Lens' (Rec ts) (LabelType l ts)
-lens l f r = fmap (\v -> setField l r v) (f (getField l r))
+lens l f r = fmap (setField l r) (f (getField l r))
 {-# INLINE lens #-}
 
 ---------------------------------------------------------------------------------------------------
@@ -159,7 +147,7 @@ getField _ r = unsafeInlineIO $ do
 -- | Constraints for 'getField'.
 type GetField (l :: Symbol) (ts :: [Type]) =
     ( Storable (LabelType l ts)
-    , NatVal (LabelOffset l ts)
+    , KnownNat (LabelOffset l ts)
     )
 
 -- | Yield a copy of the record with the field @l@ set to given value.
@@ -178,8 +166,8 @@ setField _ r v = unsafeInlineIO $ do
 -- | Constraints for 'setField'.
 type SetField (l :: Symbol) (ts :: [Type]) =
     ( Storable (LabelType l ts)
-    , NatVal (RecSize ts)
-    , NatVal (LabelOffset l ts)
+    , KnownNat (RecSize ts)
+    , KnownNat (LabelOffset l ts)
     )
 
 -- | Yield a copy of the record with the field @l@ modified by given function.
@@ -199,15 +187,15 @@ modifyField _ r f = unsafeInlineIO $ do
 -- | Constraints for 'setField'.
 type ModifyField (l :: Symbol) (ts :: [Type]) =
     ( Storable (LabelType l ts)
-    , NatVal (RecSize ts)
-    , NatVal (LabelOffset l ts)
+    , KnownNat (RecSize ts)
+    , KnownNat (LabelOffset l ts)
     )
 
 ---------------------------------------------------------------------------------------------------
 -- | Yield an immutable copy of the mutable record.
 freeze :: forall (ts :: [Type]) m.
        ( PrimMonad m
-       , NatVal (RecSize ts)
+       , KnownNat (RecSize ts)
        )
        => MRec (PrimState m) ts
        -> m (Rec ts)
@@ -217,7 +205,7 @@ freeze mr = unsafeFreeze =<< clone mr
 -- | Yield a mutable copy of the immutable record.
 thaw :: forall (ts :: [Type]) m.
      ( PrimMonad m
-     , NatVal (RecSize ts)
+     , KnownNat (RecSize ts)
      )
      => Rec ts
      -> m (MRec (PrimState m) ts)
@@ -247,7 +235,7 @@ unsafeThaw (Rec fp) = pure $ MRec fp
 
 -- | Copy an immutable record into a mutable one. 
 copy :: forall (ts :: [Type]) m.
-     ( NatVal (RecSize ts)
+     ( KnownNat (RecSize ts)
      , PrimMonad m
      )
      => Rec ts
@@ -256,5 +244,5 @@ copy :: forall (ts :: [Type]) m.
 copy (Rec fp) (MRec mfp) = do
     unsafePrimToPrim $ withForeignPtr fp $ \p ->
         withForeignPtr mfp $ \mp ->
-            copyBytes mp p (natVal @(RecSize ts))
+            copyBytes mp p (demoteInt @(RecSize ts))
 {-# INLINE copy #-}
