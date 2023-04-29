@@ -1,6 +1,6 @@
 # Record-storable
 
-![CI](https://github.com/vagarenko/record-storable/actions/workflows/main.yml/badge.svg)
+[![CI](https://github.com/vagarenko/record-storable/actions/workflows/main.yml/badge.svg)](https://github.com/vagarenko/record-storable/actions)
 
 Anonymous storable-based records.
 
