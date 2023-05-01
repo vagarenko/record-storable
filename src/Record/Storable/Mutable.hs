@@ -206,31 +206,29 @@ instance (Show t, ShowHList ts) => ShowHList (t ': ts) where
 ---------------------------------------------------------------------------------------------------
 -- | Size of the record in bytes.
 type family RecSize (ts :: [Type]) :: Nat where
-    RecSize ts = Fst (Snd (Last (Layout ts))) + Snd (Snd (Last (Layout ts)))
+    RecSize ts = CalcSize (Zip (RecFieldsSizes ts) (RecFieldsAlignments ts))
 
--- | Alignment of the record.
+-- | Sizes of the record fields.
+type family RecFieldsSizes (ts :: [Type]) :: [Nat] where
+    RecFieldsSizes '[]       = '[]
+    RecFieldsSizes ((l := t) ': rest) = SizeOf t ': RecFieldsSizes rest
+
+-- | Alignments of the record.
 type family RecAlignment (ts :: [Type]) :: Nat where
-    RecAlignment '[]       = 1
-    RecAlignment (t ': ts) = Alignment t `Max` RecAlignment ts
+    RecAlignment ts = CalcAlignment (RecFieldsAlignments ts)
+
+-- | Alignments of the record fields.
+type family RecFieldsAlignments (ts :: [Type]) :: [Nat] where
+    RecFieldsAlignments '[]       = '[]
+    RecFieldsAlignments ((l := t) ': rest) = Alignment t ': RecFieldsAlignments rest
+
+type family RecFieldLabels (ts :: [Type]) :: [Symbol] where
+    RecFieldLabels '[]                = '[]
+    RecFieldLabels ((l := t) ': rest) = l ': RecFieldLabels rest
 
 -- | List of offsets and sizes of each label.
 type family Layout (ts :: [Type]) :: [(Symbol, (Nat, Nat))] where
-    Layout ts = LayoutWrk ts 0
-
-type family LayoutWrk (ts :: [Type]) (sizeAcc :: Nat) :: [(Symbol, (Nat, Nat))] where
-    LayoutWrk '[]              _       = '[]
-    LayoutWrk ((l := v) ': ts) sizeAcc = '(l, '(LayoutWrkOffset v sizeAcc, SizeOf v)) ': LayoutWrk ts (LayoutWrkOffset v sizeAcc + SizeOf v)
-
-type family LayoutWrkOffset (t :: Type) (sizeAcc :: Nat) :: Nat where
-    LayoutWrkOffset t sizeAcc = sizeAcc + LayoutWrkPadding t sizeAcc
-
-type family LayoutWrkPadding (t :: Type) (sizeAcc :: Nat) :: Nat where
-    LayoutWrkPadding t sizeAcc = Mod (Diff (Alignment t) sizeAcc) (Alignment t)
---  layoutWrk sizeAcc = (offset, sizeOf t) : layoutWrk ts sizeAcc'
---      where
---          offset   = sizeAcc + padding
---          padding  = (alignment t - sizeAcc) `mod` alignment t
---          sizeAcc' = offset + sizeOf t
+    Layout ts = Zip (RecFieldLabels ts) (Zip (CalcOffsets (Zip (RecFieldsSizes ts) (RecFieldsAlignments ts))) (RecFieldsSizes ts))
 
 ---------------------------------------------------------------------------------------------------
 -- | Allocate memory for the record. The memory is not initialized.

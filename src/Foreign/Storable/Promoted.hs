@@ -5,6 +5,7 @@
     , DataKinds
     , TemplateHaskell
     , UndecidableInstances
+    , NoStarIsType
 #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Redundant bracket" #-}
@@ -12,19 +13,21 @@
 module Foreign.Storable.Promoted (
       PStorable(..)
     , GPStorable(..)
-    , Diff
+    , CalcSize
+    , CalcAlignment
+    , CalcOffsets
 ) where
 
 import Data.Kind
 import Data.Int
-import Prelude.Singletons       (Max, Zip, If, Last, type (++), Fst)
+import Prelude.Singletons       (Max, Zip, If, Last, type (++), Fst, Reverse, Snd, Map, SndSym0)
 import Data.Word
 import Foreign.C.Types
 import Foreign.Ptr
 import Foreign.Storable.Promoted.TH
 import GHC.Fingerprint.Type
 import GHC.Generics
-import GHC.TypeLits
+import GHC.TypeLits          
 
 -- | Promoted 'Storable'.
 class PStorable (a :: Type) where
@@ -55,34 +58,41 @@ instance (GPStorable f, GPStorable g) => GPStorable (f :*: g) where
 ---------------------------------------------------------------------------------------------------
 -- | Calculate the size of a product type from list of sizes and alignments of type's fields.
 type family CalcSize (sizes_aligns :: [(Nat, Nat)]) :: Nat where
-    CalcSize sas = Last (CalcOffsets sas) + Fst (Last sas)
+    CalcSize sas = CalcSize'Inter sas + DiffMod (CalcSize'Align sas) (CalcSize'Inter sas)
+
+type family CalcSize'Inter (sizes_aligns :: [(Nat, Nat)]) :: Nat where
+    CalcSize'Inter sas = Snd (CalcOffsetsWrk sas 0 '[])
+
+type family CalcSize'Align (sizes_aligns :: [(Nat, Nat)]) :: Nat where
+    CalcSize'Align sas = CalcAlignment (Map SndSym0 sas)
 
 -- | Calculate offsets of a product type from list of sizes and alignments of type's fields.
 type family CalcOffsets (sizes_aligns :: [(Nat, Nat)]) :: [Nat] where
-    CalcOffsets sas = CalcOffsetsWrk sas 0
+    CalcOffsets '[] = '[]
+    CalcOffsets sas = Reverse (Fst (CalcOffsetsWrk sas 0 '[]))
 
-type family CalcOffsetsWrk (sizes_aligns :: [(Nat, Nat)]) (size_acc :: Nat) :: [Nat] where
-    CalcOffsetsWrk '[]              _   = '[]
-    CalcOffsetsWrk ('(s, a) ': sas) acc = CalcOffsetsWrkWrk (acc + Padding a acc) s sas
+type family CalcOffsetsWrk (sizes_aligns :: [(Nat, Nat)]) (inter :: Nat) (size_acc :: [Nat]) :: ([Nat], Nat) where
+    CalcOffsetsWrk '[]               inter acc = '(acc, inter)
+    CalcOffsetsWrk ('(s, a) ': rest) inter acc = CalcOffsetsWrk rest ((LastOff a inter) + s) ((LastOff a inter) ': acc)
 
-type family CalcOffsetsWrkWrk (offset :: Nat) (size :: Nat) (sizes_aligns :: [(Nat, Nat)]) :: [Nat] where
-    CalcOffsetsWrkWrk o s sas = o ': CalcOffsetsWrk sas (o + s)
+type family LastOff (align :: Nat) (inter :: Nat) :: Nat where
+    LastOff a inter = inter + (Padding a inter)
 
-type family Padding (align :: Nat) (size_acc :: Nat) :: Nat where
-    Padding a acc = Mod (Diff a acc) a
+type family Padding (align :: Nat) (inter :: Nat) :: Nat where
+    Padding a inter = DiffMod a inter
 
 -- | Calculate the alignment of a product type from list of alignments of type's fields.
 type family CalcAlignment (aligns :: [Nat]) :: Nat where
     CalcAlignment '[]       = 1
     CalcAlignment (x ': xs) = x `Max` CalcAlignment xs
 
--- | Absolute value of a difference between two nats.
-type family Diff (a :: Nat) (b :: Nat) :: Nat where
-    Diff a b = DiffWrk a b (a <=? b)
+-- | diffMod a b = mod (a - b) a
+type family DiffMod (a :: Nat) (b :: Nat) :: Nat where
+    DiffMod a b = DiffModWrk a b (a <=? b) 0
 
-type family DiffWrk (a :: Nat) (b :: Nat) (a_lte_b :: Bool) :: Nat where
-    DiffWrk a b 'True  = b - a
-    DiffWrk a b 'False = a - b
+type family DiffModWrk (a :: Nat) (b :: Nat) (a_lte_b :: Bool) (mult :: Nat) :: Nat where
+    DiffModWrk a b 'False mult = Mod ((a * (mult + 1)) - b) a
+    DiffModWrk a b 'True  mult = DiffModWrk a b ((a * (mult + 1)) <=? b) (mult + 1)
 
 ---------------------------------------------------------------------------------------------------
 instance PStorable Bool        where type SizeOf Bool        = $(pSizeOf @Bool       ); type Alignment Bool        = $(pAlignment @Bool       )
