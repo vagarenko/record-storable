@@ -28,11 +28,11 @@ type Fields =
 
 hlist :: HList Fields
 hlist = 
-     (#a := 'a')
-  :& (#b := False)
-  :& (#c := (0 :: Int8))
-  :& (#d := (1 :: Double))
-  :& (#e := (2 :: Float))
+     #a := 'a'
+  :& #b := False
+  :& #c := (0 :: Int8)
+  :& #d := (1 :: Double)
+  :& #e := (2 :: Float)
   :& Nil
 
 specifyPrimM :: (Show a, Eq a) => (forall m. PrimMonad m => m a) -> (a -> Expectation) -> SpecM () ()
@@ -67,11 +67,11 @@ main = hspec $ do
         
       describe "write all fields" $ do
         let newHlist = 
-                 (#a := 'b')
-              :& (#b := True)
-              :& (#c := (3 :: Int8))
-              :& (#d := (4 :: Double))
-              :& (#e := (5 :: Float))
+                 #a := 'b'
+              :& #b := True
+              :& #c := (3 :: Int8)
+              :& #d := (4 :: Double)
+              :& #e := (5 :: Float)
               :& Nil
         specifyPrimM
           (do
@@ -87,11 +87,11 @@ main = hspec $ do
             writeField #c r 1
             readFields r)
           (`shouldBe`
-               (#a := 'a')
-            :& (#b := False)
-            :& (#c := (1 :: Int8))
-            :& (#d := (1 :: Double))
-            :& (#e := (2 :: Float))
+               #a := 'a'
+            :& #b := False
+            :& #c := (1 :: Int8)
+            :& #d := (1 :: Double)
+            :& #e := (2 :: Float)
             :& Nil)
 
       describe "clone the record" $ do
@@ -114,11 +114,11 @@ main = hspec $ do
     describe "allocate memory for the record" $ do
       describe "write all fields" $ do
         let newHlist = 
-                 (#a := 'c')
-              :& (#b := True)
-              :& (#c := (6 :: Int8))
-              :& (#d := (7 :: Double))
-              :& (#e := (8 :: Float))
+                 #a := 'c'
+              :& #b := True
+              :& #c := (6 :: Int8)
+              :& #d := (7 :: Double)
+              :& #e := (8 :: Float)
               :& Nil
         specifyPrimM
           (do
